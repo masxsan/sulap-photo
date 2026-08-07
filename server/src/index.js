@@ -11,6 +11,7 @@ const auth = require('./auth');
 const jobs = require('./jobs');
 const features = require('./features');
 const themes = require('./themes');
+const providers = require('./providers');
 
 const app = express();
 app.use(cors());
@@ -75,9 +76,8 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
 app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const body = req.body || {};
-  const apiKey = String(body.apiKey ?? row?.provider_key ?? '').trim();
-  const baseUrl = String(body.baseUrl ?? row?.provider_base_url ?? config.openaiBaseUrl).trim();
-  const base = baseUrl.replace(/\/+$/, '');
+  const apiKey = String(body.apiKey || row?.provider_key || '').trim();
+  const base = providers.normalizeBase(body.baseUrl || row?.provider_base_url, config.openaiBaseUrl);
   if (!apiKey) {
     return res.json({ ok: false, url: base, message: 'API key belum diisi di Pengaturan.' });
   }

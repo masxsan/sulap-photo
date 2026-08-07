@@ -79,8 +79,15 @@ async function fetchRetry(fn, ctrl) {
   return res;
 }
 
+// Normalisasi base URL: default bila kosong, tambah protokol bila tak ada, buang slash di akhir.
+function normalizeBase(url, fallback = '') {
+  const s = String(url || fallback || '').trim().replace(/\/+$/, '');
+  if (!s) return String(fallback || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`;
+}
+
 async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
-  const base = (baseUrl || config.openaiBaseUrl).replace(/\/+$/, '');
+  const base = normalizeBase(baseUrl, config.openaiBaseUrl);
   const m = model || config.openaiModel;
   const size = ratioSize(ratio, { forOpenAI: true });
   const headers = {
@@ -146,5 +153,5 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
   }
 }
 
-module.exports = { pollinations, openaiCompat, ratioSize };
+module.exports = { pollinations, openaiCompat, ratioSize, normalizeBase };
 
