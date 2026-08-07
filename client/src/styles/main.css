@@ -11,6 +11,17 @@
   --color-brand-700: #c2410c;
   --color-brand-800: #9a3412;
   --color-brand-900: #7c2d12;
+  --color-navy-50: #eef4fb;
+  --color-navy-100: #d9e6f5;
+  --color-navy-200: #b3cceb;
+  --color-navy-300: #82abdd;
+  --color-navy-400: #4f85cc;
+  --color-navy-500: #2f67b8;
+  --color-navy-600: #24529b;
+  --color-navy-700: #1d427d;
+  --color-navy-800: #16315c;
+  --color-navy-900: #0d2144;
+  --color-navy-950: #081530;
   --font-display: "Comfortaa", ui-rounded, system-ui, sans-serif;
 }
 
@@ -329,3 +340,38 @@ html:is(
   [data-theme="cyberpunk"],
   [data-theme="ninja"]
 ) .hover\:text-slate-900:hover { color: var(--text-hi); }
+
+/* ==================== Sidebar ==================== */
+
+/* Scrollbar khusus untuk sidebar */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 9999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Backdrop mobile */
+.sp-sidebar-backdrop {
+  transition: opacity 0.3s ease;
+}
+.sp-fade-enter-active,
+.sp-fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.sp-fade-enter-from,
+.sp-fade-leave-to {
+  opacity: 0;
+}

@@ -130,7 +130,7 @@ async function poll() {
 </script>
 
 <template>
-  <div class="min-h-screen">
+  <div class="min-h-screen lg:pl-68 pt-16">
     <NavBar />
     <main class="max-w-6xl mx-auto px-4 py-8">
       <button

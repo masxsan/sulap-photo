@@ -78,7 +78,7 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
 </script>
 
 <template>
-  <div class="min-h-screen">
+  <div class="min-h-screen lg:pl-68 pt-16">
     <NavBar />
     <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
       <h1 class="font-display text-2xl font-extrabold text-slate-900">Pengaturan</h1>
