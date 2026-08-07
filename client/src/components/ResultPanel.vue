@@ -16,7 +16,7 @@ async function downloadJob(job) {
     const url = await api.fileUrl(job.resultUrl);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sulap-${props.featureName.replace(/\s+/g, '-').toLowerCase()}-${job.id}.png`;
+    a.download = `aura-${props.featureName.replace(/\s+/g, '-').toLowerCase()}-${job.id}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   } catch {

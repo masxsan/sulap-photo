@@ -1,8 +1,8 @@
 {
-  "name": "sulap-photo",
+  "name": "auraphoto",
   "version": "0.1.0",
   "private": true,
-  "description": "Sulap Photo - aplikasi AI foto open source (terinspirasi Mantra Foto)",
+  "description": "AuraPhoto - aplikasi AI foto open source (terinspirasi Mantra Foto)",
   "scripts": {
     "setup": "npm install --prefix server && npm install --prefix client",
     "dev:server": "npm run dev --prefix server",

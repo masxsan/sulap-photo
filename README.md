@@ -1,6 +1,6 @@
 <div align="center">
 
-# ✨ Sulap Photo
+# ✨ AuraPhoto
 
 **Edit & generate foto dengan AI — open source, gratis untuk memulai.**
 

@@ -33,7 +33,7 @@ async function submit() {
         <span class="inline-flex w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 text-white items-center justify-center">
           <AppIcon name="zap" :size="24" />
         </span>
-        <h1 class="mt-4 font-display text-2xl font-extrabold text-slate-900">Masuk ke Sulap Photo</h1>
+        <h1 class="mt-4 font-display text-2xl font-extrabold text-slate-900">Masuk ke AuraPhoto</h1>
         <p class="text-sm text-slate-500 mt-1">Lanjutkan mengedit fotomu</p>
       </div>
 

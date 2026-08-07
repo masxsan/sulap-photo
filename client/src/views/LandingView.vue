@@ -16,7 +16,7 @@ const highlights = [
           <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white">
             <AppIcon name="zap" :size="16" />
           </span>
-          Sulap Photo
+          AuraPhoto
         </div>
         <nav class="flex items-center gap-2">
           <router-link :to="{ name: 'login' }" class="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900">Masuk</router-link>
@@ -34,7 +34,7 @@ const highlights = [
           <AppIcon name="sparkles" :size="14" /> Open Source AI Photo
         </span>
         <h1 class="mt-5 font-display text-4xl md:text-6xl font-extrabold text-slate-900 leading-tight">
-          Sulap Foto Biasa<br />
+          Edit Foto Biasa<br />
           Jadi <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-500 to-pink-500">Karya Menakjubkan</span>
         </h1>
         <p class="mt-5 max-w-xl mx-auto text-slate-600 text-lg">

@@ -29,7 +29,7 @@ function logout() {
         <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white">
           <AppIcon name="zap" :size="16" />
         </span>
-        Sulap Photo
+        AuraPhoto
       </router-link>
 
       <nav class="flex items-center gap-1 sm:gap-2">

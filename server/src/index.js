@@ -273,7 +273,7 @@ app.get('/api/history', auth.requireAuth, (req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    service: 'sulap-photo-server',
+    service: 'auraphoto-server',
     provider: config.defaultProvider,
     hasServerKey: !!config.openaiApiKey,
     freeCredits: config.freeCredits,
@@ -296,5 +296,5 @@ app.use((err, _req, res, _next) => {
 jobs.markStaleAsError();
 
 app.listen(config.port, () => {
-  console.log(`Sulap Photo server berjalan di http://localhost:${config.port}`);
+  console.log(`AuraPhoto server berjalan di http://localhost:${config.port}`);
 });
