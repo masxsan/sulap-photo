@@ -173,7 +173,7 @@ function logout() {
           {{ initials }}
         </span>
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-semibold truncate">{{ firstName() }}</p>
+          <p class="text-sm font-semibold truncate">{{ firstName }}</p>
           <p class="text-xs text-emerald-300 font-medium">
             <AppIcon name="wallet" :size="12" class="inline -mt-0.5" />
             {{ auth.credits.toLocaleString('id-ID') }} kredit
