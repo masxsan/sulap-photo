@@ -125,6 +125,18 @@ app.post('/api/uploads', auth.requireAuth, upload.single('file'), (req, res) => 
   res.json({ id: result.lastInsertRowid, name: req.file.originalname });
 });
 
+// Sajikan file upload untuk pratinjau (hanya milik user yang bersangkutan)
+app.get('/api/uploads/:id/file', auth.requireAuth, (req, res) => {
+  const row = db
+    .prepare('SELECT * FROM uploads WHERE id = ? AND user_id = ?')
+    .get(parseInt(req.params.id, 10), req.user.id);
+  if (!row || !fs.existsSync(row.path)) {
+    return res.status(404).json({ error: 'File tidak ditemukan' });
+  }
+  res.type(row.mime || 'image/png');
+  res.sendFile(row.path);
+});
+
 // ================= Katalog fitur =================
 
 app.get('/api/features', auth.optionalAuth, (_req, res) => {

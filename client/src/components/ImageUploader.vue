@@ -1,20 +1,36 @@
 <script setup>
-import { ref, watch, computed } from 'vue';
+import { ref, watch, onBeforeUnmount } from 'vue';
 import { api } from '../api';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps({
-  modelValue: { type: [String, null], default: null },
+  modelValue: { type: [String, Number, null], default: null },
   label: { type: String, default: '' },
   accept: { type: String, default: 'image/*' },
   maxMb: { type: Number, default: 10 },
 });
 const emit = defineEmits(['update:modelValue']);
 
-const preview = computed(() => props.modelValue);
+const previewUrl = ref(null);
 const error = ref('');
 const uploading = ref(false);
 const inputRef = ref(null);
+
+function revoke() {
+  if (previewUrl.value) {
+    URL.revokeObjectURL(previewUrl.value);
+    previewUrl.value = null;
+  }
+}
+
+async function loadPreview(id) {
+  if (!id) return;
+  try {
+    previewUrl.value = await api.fileUrl(`/uploads/${id}/file`);
+  } catch {
+    previewUrl.value = null;
+  }
+}
 
 async function handleFile(file) {
   if (!file) return;
@@ -30,7 +46,9 @@ async function handleFile(file) {
   uploading.value = true;
   try {
     const { id } = await api.upload('/uploads', file);
+    revoke();
     emit('update:modelValue', id);
+    await loadPreview(id);
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -44,12 +62,20 @@ function onDrop(e) {
 }
 
 function remove() {
+  revoke();
   emit('update:modelValue', null);
 }
 
 watch(() => props.modelValue, (v) => {
-  if (v) error.value = '';
+  if (v) {
+    error.value = '';
+    loadPreview(v);
+  } else {
+    revoke();
+  }
 });
+
+onBeforeUnmount(revoke);
 </script>
 
 <template>
@@ -59,7 +85,10 @@ watch(() => props.modelValue, (v) => {
       v-if="modelValue"
       class="relative aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-100"
     >
-      <img :src="preview" class="w-full h-full object-contain" alt="Pratinjau" />
+      <img v-if="previewUrl" :src="previewUrl" class="w-full h-full object-contain" alt="Pratinjau" />
+      <div v-else class="w-full h-full flex items-center justify-center text-slate-300">
+        <svg class="w-8 h-8 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
+      </div>
       <button
         type="button"
         @click="remove"
