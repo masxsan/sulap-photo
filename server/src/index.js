@@ -71,6 +71,53 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   res.json({ user: auth.publicUser(user) });
 });
 
+// Tes koneksi ke provider OpenAI-compatible (diagnosis "fetch failed")
+app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const body = req.body || {};
+  const apiKey = String(body.apiKey ?? row?.provider_key ?? '').trim();
+  const baseUrl = String(body.baseUrl ?? row?.provider_base_url ?? config.openaiBaseUrl).trim();
+  const base = baseUrl.replace(/\/+$/, '');
+  if (!apiKey) {
+    return res.json({ ok: false, url: base, message: 'API key belum diisi di Pengaturan.' });
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: ctrl.signal,
+    });
+    const text = await r.text().catch(() => '');
+    if (r.ok) {
+      return res.json({ ok: true, url: base, status: r.status, message: `Koneksi OK ke ${base}.` });
+    }
+    if (r.status === 401 || r.status === 403) {
+      return res.json({
+        ok: false,
+        url: base,
+        status: r.status,
+        message: `Kunci API ditolak (${r.status}) oleh ${base}. Pastikan key benar & masih aktif.`,
+      });
+    }
+    return res.json({
+      ok: false,
+      url: base,
+      status: r.status,
+      message: `Server ${base} merespons (${r.status}): ${text.slice(0, 160)}`,
+    });
+  } catch (err) {
+    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'kesalahan tak dikenal';
+    return res.json({
+      ok: false,
+      url: base,
+      message: `Gagal terhubung ke ${base}: ${cause}. Cek Base URL & koneksi internet.`,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 // ================= Kredit / wallet =================
 
 app.get('/api/wallet/transactions', auth.requireAuth, (req, res) => {

@@ -14,6 +14,8 @@ const saving = ref(false);
 const saved = ref(false);
 const message = ref('');
 const error = ref('');
+const testing = ref(false);
+const testResult = ref(null);
 
 onMounted(async () => {
   await auth.fetchMe();
@@ -45,14 +47,31 @@ async function saveProvider() {
   }
 }
 
+async function testProvider() {
+  testing.value = true;
+  testResult.value = null;
+  try {
+    testResult.value = await api.post('/me/provider/test', {
+      apiKey: apiKey.value.trim(),
+      baseUrl: baseUrl.value.trim(),
+      model: model.value.trim(),
+    });
+  } catch (e) {
+    testResult.value = { ok: false, message: e.message };
+  } finally {
+    testing.value = false;
+  }
+}
+
 const typeLabel = (t) => ({
   signup_bonus: 'Bonus pendaftaran',
   consume: 'Biaya generate',
   refund: 'Refund',
   grant: 'Top-up admin',
+  theme_purchase: 'Beli tema',
 }[t] || t);
 
-const typeColor = (t) => (t === 'consume' ? 'text-red-500' : 'text-emerald-600');
+const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-500' : 'text-emerald-600');
 </script>
 
 <template>
@@ -91,14 +110,28 @@ const typeColor = (t) => (t === 'consume' ? 'text-red-500' : 'text-emerald-600')
           </div>
           <p v-if="message" class="text-sm text-emerald-600">{{ message }}</p>
           <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
-          <button
-            @click="saveProvider"
-            :disabled="saving"
-            class="px-5 py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 inline-flex items-center gap-2 transition-colors"
-          >
-            <span v-if="saving" class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-            {{ saved ? 'Tersimpan ✓' : 'Simpan' }}
-          </button>
+          <div v-if="testResult" class="text-sm rounded-lg px-3 py-2 border" :class="testResult.ok ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-red-700 bg-red-50 border-red-200'">
+            <span class="font-bold">{{ testResult.ok ? 'Terhubung' : 'Gagal' }}</span> — {{ testResult.message }}
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              @click="saveProvider"
+              :disabled="saving"
+              class="px-5 py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 inline-flex items-center gap-2 transition-colors"
+            >
+              <span v-if="saving" class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+              {{ saved ? 'Tersimpan ✓' : 'Simpan' }}
+            </button>
+            <button
+              @click="testProvider"
+              :disabled="testing"
+              class="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-600 hover:border-brand-400 hover:text-brand-600 font-semibold disabled:opacity-50 inline-flex items-center gap-2 transition-colors"
+            >
+              <span v-if="testing" class="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
+              <AppIcon v-else name="zap" :size="15" />
+              Tes Koneksi
+            </button>
+          </div>
         </div>
       </section>
 

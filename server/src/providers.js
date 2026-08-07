@@ -51,6 +51,18 @@ async function pollinations({ prompt, ratio, model }) {
   }
 }
 
+// fetch dengan pesan error ramah bila koneksi gagal (DNS, timeout, TLS, dsb.)
+async function pFetch(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'kesalahan tak dikenal';
+    const e = new Error(`Gagal terhubung ke provider (${url}): ${cause}. Cek Base URL, kunci API, dan koneksi internet Anda.`);
+    e.status = 502;
+    throw e;
+  }
+}
+
 // Coba request, lalu retry TANPA `response_format` bila provider menolak parameter itu.
 async function fetchRetry(fn, ctrl) {
   let res = await fn(true);
@@ -93,7 +105,7 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
         return f;
       };
       const res = await fetchRetry(
-        (withFormat) => fetch(`${base}/images/edits`, { method: 'POST', headers, body: form(withFormat), signal: ctrl.signal }),
+        (withFormat) => pFetch(`${base}/images/edits`, { method: 'POST', headers, body: form(withFormat), signal: ctrl.signal }),
         ctrl
       );
       data = await res.json();
@@ -109,7 +121,7 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
         });
       const res = await fetchRetry(
         (withFormat) =>
-          fetch(`${base}/images/generations`, {
+          pFetch(`${base}/images/generations`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: body(withFormat),
@@ -135,3 +147,4 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
 }
 
 module.exports = { pollinations, openaiCompat, ratioSize };
+
