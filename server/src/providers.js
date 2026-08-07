@@ -51,6 +51,22 @@ async function pollinations({ prompt, ratio, model }) {
   }
 }
 
+// Coba request, lalu retry TANPA `response_format` bila provider menolak parameter itu.
+async function fetchRetry(fn, ctrl) {
+  let res = await fn(true);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    if (res.status === 400 && /response_format/i.test(text)) {
+      res = await fn(false);
+      if (res.ok) return res;
+      const text2 = await res.text().catch(() => '');
+      throw new Error(`API gambar gagal (${res.status}): ${text2.slice(0, 200)}`);
+    }
+    throw new Error(`API gambar gagal (${res.status}): ${text.slice(0, 200)}`);
+  }
+  return res;
+}
+
 async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
   const base = (baseUrl || config.openaiBaseUrl).replace(/\/+$/, '');
   const m = model || config.openaiModel;
@@ -65,43 +81,42 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
     let data;
     if (feature.type === 'img2img') {
       // /images/edits (multipart)
-      const form = new FormData();
       const img = images[0];
-      form.append('image', new Blob([img.buffer], { type: img.mime || 'image/png' }), 'input.png');
-      form.append('prompt', prompt);
-      form.append('model', m);
-      form.append('size', size);
-      form.append('n', '1');
-      form.append('response_format', 'b64_json');
-      const res = await fetch(`${base}/images/edits`, {
-        method: 'POST',
-        headers,
-        body: form,
-        signal: ctrl.signal,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`API gambar gagal (${res.status}): ${text.slice(0, 200)}`);
-      }
+      const form = (withFormat) => {
+        const f = new FormData();
+        f.append('image', new Blob([img.buffer], { type: img.mime || 'image/png' }), 'input.png');
+        f.append('prompt', prompt);
+        f.append('model', m);
+        f.append('size', size);
+        f.append('n', '1');
+        if (withFormat) f.append('response_format', 'b64_json');
+        return f;
+      };
+      const res = await fetchRetry(
+        (withFormat) => fetch(`${base}/images/edits`, { method: 'POST', headers, body: form(withFormat), signal: ctrl.signal }),
+        ctrl
+      );
       data = await res.json();
     } else {
       // /images/generations (json)
-      const res = await fetch(`${base}/images/generations`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const body = (withFormat) =>
+        JSON.stringify({
           model: m,
           prompt,
           size,
           n: 1,
-          response_format: 'b64_json',
-        }),
-        signal: ctrl.signal,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`API gambar gagal (${res.status}): ${text.slice(0, 200)}`);
-      }
+          ...(withFormat ? { response_format: 'b64_json' } : {}),
+        });
+      const res = await fetchRetry(
+        (withFormat) =>
+          fetch(`${base}/images/generations`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: body(withFormat),
+            signal: ctrl.signal,
+          }),
+        ctrl
+      );
       data = await res.json();
     }
 
