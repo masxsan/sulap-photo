@@ -27,7 +27,7 @@ async function submit() {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center px-4 bg-gradient-to-b from-white to-brand-50/40">
+  <div class="min-h-screen flex items-center justify-center px-4">
     <div class="w-full max-w-sm">
       <div class="text-center mb-8">
         <span class="inline-flex w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 text-white items-center justify-center">

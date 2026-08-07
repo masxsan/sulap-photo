@@ -10,6 +10,7 @@ const db = require('./db');
 const auth = require('./auth');
 const jobs = require('./jobs');
 const features = require('./features');
+const themes = require('./themes');
 
 const app = express();
 app.use(cors());
@@ -140,6 +141,20 @@ app.get('/api/features', auth.optionalAuth, (_req, res) => {
       uiSchema: f.uiSchema,
     })),
   });
+});
+
+// ================= Tema =================
+
+app.get('/api/themes', auth.optionalAuth, (req, res) => {
+  res.json(themes.listFor(req.user ? req.user.id : null));
+});
+
+app.post('/api/themes/:id/purchase', auth.requireAuth, (req, res) => {
+  try {
+    res.json(themes.purchase(req.user.id, req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
+  }
 });
 
 // ================= Generate & jobs =================

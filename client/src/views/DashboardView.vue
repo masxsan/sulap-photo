@@ -17,7 +17,7 @@ const firstName = () => (auth.user?.name || 'Pengguna').split(' ')[0];
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50">
+  <div class="min-h-screen">
     <NavBar />
     <main class="max-w-6xl mx-auto px-4 py-8">
       <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-8">

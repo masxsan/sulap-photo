@@ -31,7 +31,7 @@ const statusLabel = (s) => (s === 'done' ? 'Selesai' : s === 'running' ? 'Proses
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50">
+  <div class="min-h-screen">
     <NavBar />
     <main class="max-w-4xl mx-auto px-4 py-8">
       <h1 class="font-display text-2xl font-extrabold text-slate-900 mb-6">Riwayat</h1>

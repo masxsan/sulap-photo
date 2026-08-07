@@ -20,11 +20,18 @@ function verifyPassword(plain, hash) {
 
 function publicUser(row) {
   if (!row) return null;
+  let themes = [];
+  try {
+    themes = JSON.parse(row.themes || '[]');
+  } catch {
+    themes = [];
+  }
   return {
     id: row.id,
     name: row.name,
     email: row.email,
     credits: row.credits,
+    themes: Array.isArray(themes) ? themes : [],
     providerConfigured: !!(row.provider_key || config.openaiApiKey),
     provider: row.provider_key ? 'user' : config.defaultProvider,
     createdAt: row.created_at,

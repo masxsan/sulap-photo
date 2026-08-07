@@ -56,7 +56,7 @@ const typeColor = (t) => (t === 'consume' ? 'text-red-500' : 'text-emerald-600')
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50">
+  <div class="min-h-screen">
     <NavBar />
     <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
       <h1 class="font-display text-2xl font-extrabold text-slate-900">Pengaturan</h1>

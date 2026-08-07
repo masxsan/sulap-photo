@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   provider_key TEXT DEFAULT '',
   provider_base_url TEXT DEFAULT '',
   provider_model TEXT DEFAULT '',
+  themes TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -73,5 +74,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_tx_user ON credit_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_job_inputs_batch ON job_inputs(batch_id);
 `);
+
+// Migrasi ringan: tambah kolom jika belum ada (DB lama sebelum fitur tema).
+{
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!userCols.includes('themes')) {
+    db.exec("ALTER TABLE users ADD COLUMN themes TEXT NOT NULL DEFAULT '[]'");
+  }
+}
 
 module.exports = db;

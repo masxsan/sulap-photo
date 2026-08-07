@@ -1,10 +1,20 @@
 <script setup>
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { useThemeStore } from '../stores/theme';
 import AppIcon from './AppIcon.vue';
+import ThemePicker from './ThemePicker.vue';
 
 const auth = useAuthStore();
+const theme = useThemeStore();
 const router = useRouter();
+
+const pickerOpen = ref(false);
+
+onMounted(() => {
+  theme.fetchThemes();
+});
 
 function logout() {
   auth.logout();
@@ -39,6 +49,13 @@ function logout() {
         </router-link>
 
         <div class="flex items-center gap-2 ml-1 pl-3 border-l border-slate-200">
+          <button
+            @click="pickerOpen = true"
+            title="Ganti tema"
+            class="p-2 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-brand-50 transition-colors"
+          >
+            <AppIcon name="palette" :size="16" />
+          </button>
           <span class="inline-flex items-center gap-1 text-sm font-semibold text-slate-700">
             <AppIcon name="wallet" :size="15" class="text-brand-500" />
             {{ auth.credits.toLocaleString('id-ID') }}
@@ -54,4 +71,6 @@ function logout() {
       </nav>
     </div>
   </header>
+
+  <ThemePicker v-if="pickerOpen" @close="pickerOpen = false" />
 </template>

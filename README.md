@@ -31,8 +31,9 @@ Terinspirasi dari konsep aplikasi AI-photo modern, dibangun untuk dipelajari, di
 | 📸 **Pas Foto & Upscale HD** | Pas foto resmi + perbesar & pertajam hasil. |
 | 🏠 **Desain Interior** | Lihat ruanganmu bergaya minimalis, mewah, dll. |
 | 📢 **Poster, Banner & Logo** | Desain promosi dan logo siap pakai. |
+| 🎨 **Tema Animasi** | 9 tema (sakura, galaksi, cyberpunk, ninja…) dengan partikel animasi — bisa dibeli dengan kredit. |
 
-Total **15 fitur AI** — semuanya didukung sistem **kredit** yang mudah dipahami, plus **provider AI yang bisa ditukar** — menggunakan engine gratis bawaan atau API key milik Anda sendiri.
+Total **15 fitur AI + 9 tema animasi** — semuanya didukung sistem **kredit** yang mudah dipahami, plus **provider AI yang bisa ditukar** — menggunakan engine gratis bawaan atau API key milik Anda sendiri.
 
 ## 🧱 Tech Stack
 
@@ -80,13 +81,15 @@ sulap-photo/
 │       ├── db.js            # Schema SQLite (node:sqlite)
 │       ├── auth.js          # JWT + bcrypt
 │       ├── features.js      # Katalog fitur AI (uiSchema + prompt template)
+│       ├── themes.js        # Katalog tema + pembelian kredit
 │       ├── providers.js     # Provider AI (Pollinations & OpenAI-compatible)
 │       └── jobs.js          # Job queue + pemrosesan generasi
 └── client/                  # Frontend Vue 3 + Vite + Tailwind
     └── src/
         ├── views/           # Landing, Login, Dashboard, Feature, History, Settings
-        ├── components/      # NavBar, FeatureForm, ResultPanel, ImageUploader, dll.
-        ├── stores/          # Pinia (auth, catalog)
+        ├── components/      # NavBar, FeatureForm, ResultPanel, ThemeEffects, dll.
+        ├── stores/          # Pinia (auth, catalog, theme)
+        ├── themes-ui.js     # Konfigurasi efek animasi per tema
         └── api.js           # HTTP client
 ```
 
@@ -103,6 +106,8 @@ sulap-photo/
 | `POST` | `/api/generate` | ✅ | Buat batch generasi → `{batchId}` |
 | `GET` | `/api/jobs/:batchId` | ✅ | Status & hasil generasi |
 | `GET` | `/api/history` | ✅ | Riwayat generasi |
+| `GET` | `/api/themes` | — | Katalog tema + status kepemilikan |
+| `POST` | `/api/themes/:id/purchase` | ✅ | Beli tema dengan kredit |
 | `POST` | `/api/admin/credits` | `x-admin-key` | Top-up kredit pengguna |
 
 Top-up kredit via admin:

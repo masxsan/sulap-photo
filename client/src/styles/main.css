@@ -27,3 +27,305 @@ body {
 
 /* Gambar hasil tetap tajam saat di-blob */
 img { max-width: 100%; }
+
+/* ==================== Tema & animasi latar ==================== */
+
+.sp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Partikel */
+.sp-p {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  animation-fill-mode: backwards;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+.sp-petal,
+.sp-leaf {
+  border-radius: 62% 10% 62% 10% / 62% 10% 62% 10%;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
+  animation-name: sp-fall-sway;
+}
+
+.sp-snow {
+  border-radius: 9999px;
+  box-shadow: 0 0 5px rgba(255, 255, 255, 0.7);
+  animation-name: sp-fall-sway;
+}
+
+.sp-rain {
+  border-radius: 2px;
+  background: linear-gradient(transparent, #e2e8f0) !important;
+  animation-name: sp-rain-fall;
+}
+
+.sp-star {
+  border-radius: 9999px;
+  box-shadow: 0 0 9px 2px rgba(255, 255, 255, 0.5);
+  animation-name: sp-twinkle;
+  animation-timing-function: ease-in-out;
+}
+
+.sp-shuriken {
+  border-radius: 9999px;
+  background: conic-gradient(
+    #e11d48 0deg 45deg, #7f1d1d 45deg 90deg,
+    #e11d48 90deg 135deg, #7f1d1d 135deg 180deg,
+    #e11d48 180deg 225deg, #7f1d1d 225deg 270deg,
+    #e11d48 270deg 315deg, #7f1d1d 315deg 360deg) !important;
+  box-shadow: 0 0 10px rgba(225, 29, 72, 0.5);
+  animation-name: sp-fall;
+}
+
+/* Nebula / glow */
+.sp-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(40px);
+  animation: sp-blob-drift ease-in-out infinite alternate;
+}
+
+@keyframes sp-fall-sway {
+  0% { transform: translateY(0) translateX(0) rotate(var(--rot)); opacity: 0; }
+  8% { opacity: 1; }
+  50% { transform: translateY(calc(var(--fy) * 0.5)) translateX(var(--sx)) rotate(calc(var(--rot) + 180deg)); }
+  100% { transform: translateY(var(--fy)) translateX(calc(var(--sx) * -1)) rotate(calc(var(--rot) + 360deg)); opacity: 0; }
+}
+
+@keyframes sp-fall {
+  0% { transform: translateY(0) translateX(0) rotate(var(--rot)); opacity: 0; }
+  8% { opacity: 1; }
+  100% { transform: translateY(var(--fy)) translateX(var(--sx)) rotate(calc(var(--rot) + 720deg)); opacity: 0; }
+}
+
+@keyframes sp-rain-fall {
+  0% { transform: translateY(0) translateX(0); opacity: 0; }
+  15% { opacity: 0.9; }
+  100% { transform: translateY(112vh) translateX(-4vw); opacity: 0; }
+}
+
+@keyframes sp-twinkle {
+  0%, 100% { opacity: 0.15; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes sp-blob-drift {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(6vw, -5vh); }
+}
+
+/* Tema cyberpunk: grid neon + glow + scanline */
+.sp-cyberpunk-grid {
+  position: absolute;
+  inset: 30% 0 0 0;
+  background:
+    linear-gradient(rgba(255, 45, 85, 0.18) 1px, transparent 1px) 0 0 / 100% 64px,
+    linear-gradient(90deg, rgba(0, 229, 255, 0.18) 1px, transparent 1px) 0 0 / 64px 100%;
+  transform: perspective(640px) rotateX(48deg) scale(1.5);
+  transform-origin: top;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.9), transparent 90%);
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.9), transparent 90%);
+  animation: sp-grid-glow 4s ease-in-out infinite alternate;
+}
+
+.sp-cyberpunk-glow {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(70px);
+  opacity: 0.5;
+  animation: sp-blob-drift 12s ease-in-out infinite alternate;
+}
+.sp-cyberpunk-glow.g1 { width: 420px; height: 420px; left: 8%; top: 15%;
+  background: radial-gradient(circle, rgba(255, 45, 85, 0.5), transparent 70%); }
+.sp-cyberpunk-glow.g2 { width: 360px; height: 360px; right: 6%; top: 40%;
+  background: radial-gradient(circle, rgba(0, 229, 255, 0.45), transparent 70%);
+  animation-delay: -5s; }
+
+.sp-cyberpunk-scan {
+  position: absolute;
+  left: 0; right: 0; height: 120px;
+  background: linear-gradient(to bottom, transparent, rgba(0, 229, 255, 0.12), transparent);
+  animation: sp-scan 7s linear infinite;
+}
+
+@keyframes sp-grid-glow {
+  from { opacity: 0.7; }
+  to { opacity: 1; }
+}
+
+@keyframes sp-scan {
+  from { transform: translateY(-20vh); }
+  to { transform: translateY(110vh); }
+}
+
+/* ---- Override warna permukaan untuk tema latar gelap ---- */
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) {
+  --surface: #161f30;
+  --surface-2: #1e293b;
+  --surface-3: #0f172a;
+  --line: #334155;
+  --text-hi: #f1f5f9;
+  --text-mid: #cbd5e1;
+  --text-low: #94a3b8;
+  --text-dim: #64748b;
+}
+
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-white { background-color: var(--surface); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-white\/90 { background-color: rgba(22, 31, 48, 0.9); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-slate-50 { background-color: var(--surface-3); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-slate-100 { background-color: var(--surface-2); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-slate-300 { background-color: var(--line); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .bg-slate-900\/50 { background-color: rgba(2, 6, 23, 0.6); }
+
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-900 { color: var(--text-hi); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-800 { color: var(--text-hi); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-700 { color: var(--text-mid); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-600 { color: var(--text-low); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-500 { color: var(--text-low); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-400 { color: var(--text-dim); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .text-slate-300 { color: var(--text-dim); }
+
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .border-slate-100 { border-color: var(--line); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .border-slate-200 { border-color: var(--line); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .border-slate-300 { border-color: var(--line); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--line); }
+
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .hover\:bg-slate-100:hover { background-color: var(--surface-2); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .hover\:text-slate-800:hover { color: var(--text-hi); }
+html:is(
+  [data-theme="dark"],
+  [data-theme="galaxy"],
+  [data-theme="rainy"],
+  [data-theme="cyberpunk"],
+  [data-theme="ninja"]
+) .hover\:text-slate-900:hover { color: var(--text-hi); }
