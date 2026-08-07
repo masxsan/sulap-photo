@@ -51,16 +51,32 @@ async function pollinations({ prompt, ratio, model }) {
   }
 }
 
+// Kode error jaringan sementara yang layak di-retry
+const RETRYABLE_NET = ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH'];
+
 // fetch dengan pesan error ramah bila koneksi gagal (DNS, timeout, TLS, dsb.)
-async function pFetch(url, init) {
-  try {
-    return await fetch(url, init);
-  } catch (err) {
-    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'kesalahan tak dikenal';
-    const e = new Error(`Gagal terhubung ke provider (${url}): ${cause}. Cek Base URL, kunci API, dan koneksi internet Anda.`);
-    e.status = 502;
-    throw e;
+// dan retry otomatis untuk kegagalan jaringan sementara.
+async function pFetch(url, init, { retries = 3 } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      lastErr = err;
+      const code = String(err?.cause?.code || err?.code || err?.message || '').toUpperCase();
+      const retryable =
+        RETRYABLE_NET.some((c) => code.includes(c)) ||
+        /FETCH FAILED|SOCKET|ECONNRESET|ETIMEDOUT|UND_ERR/i.test(code);
+      if (!retryable || i === retries - 1) break;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
   }
+  const cause = lastErr?.cause?.code || lastErr?.cause?.message || lastErr?.message || 'kesalahan tak dikenal';
+  const e = new Error(
+    `Gagal terhubung ke provider (${url}): ${cause}. Cek koneksi internet, proxy/VPN, atau firewall Anda, lalu coba lagi.`
+  );
+  e.status = 502;
+  throw e;
 }
 
 // Coba request, lalu retry TANPA `response_format` bila provider menolak parameter itu.
