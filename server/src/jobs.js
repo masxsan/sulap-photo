@@ -39,6 +39,8 @@ function resolveProvider(feature, user) {
   }
 
   // txt2img
+  // Jika user mengaktifkan "pakai gratis untuk fitur teks", selalu pakai Pollinations.
+  if (user.use_free_txt) return { name: 'pollinations' };
   if (userKey) return { name: 'openai', apiKey: userKey, baseUrl: user.provider_base_url || config.openaiBaseUrl, model: user.provider_model || config.openaiModel };
   if (serverKey) return { name: 'openai', apiKey: serverKey, baseUrl: config.openaiBaseUrl, model: config.openaiModel };
   return { name: 'pollinations' };

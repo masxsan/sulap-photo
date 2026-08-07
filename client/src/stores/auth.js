@@ -54,8 +54,8 @@ export const useAuthStore = defineStore('auth', {
         this.logout();
       }
     },
-    async saveProvider({ apiKey, baseUrl, model }) {
-      const data = await api.patch('/me/provider', { apiKey, baseUrl, model });
+    async saveProvider({ apiKey, baseUrl, model, useFreeTxt }) {
+      const data = await api.patch('/me/provider', { apiKey, baseUrl, model, useFreeTxt });
       this.user = data.user;
     },
     logout() {

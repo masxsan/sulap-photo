@@ -35,7 +35,7 @@ async function pollinations({ prompt, ratio, model }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 120000);
   try {
-    const res = await fetch(url, {
+    const res = await pFetch(url, {
       signal: ctrl.signal,
       headers: { accept: 'image/*' },
     });

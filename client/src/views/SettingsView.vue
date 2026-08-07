@@ -9,6 +9,7 @@ const auth = useAuthStore();
 const apiKey = ref('');
 const baseUrl = ref('');
 const model = ref('');
+const useFreeTxt = ref(false);
 const transactions = ref([]);
 const saving = ref(false);
 const saved = ref(false);
@@ -19,6 +20,7 @@ const testResult = ref(null);
 
 onMounted(async () => {
   await auth.fetchMe();
+  useFreeTxt.value = !!auth.user?.useFreeTxt;
   try {
     const data = await api.get('/wallet/transactions');
     transactions.value = data.transactions;
@@ -37,6 +39,7 @@ async function saveProvider() {
       apiKey: apiKey.value.trim(),
       baseUrl: baseUrl.value.trim(),
       model: model.value.trim(),
+      useFreeTxt: useFreeTxt.value,
     });
     saved.value = true;
     setTimeout(() => (saved.value = false), 2500);
@@ -108,6 +111,15 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
               <input v-model="model" type="text" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" placeholder="gpt-image-1" />
             </div>
           </div>
+          <label class="flex items-start gap-2.5 mt-1 cursor-pointer select-none">
+            <input v-model="useFreeTxt" type="checkbox" class="mt-0.5 w-4 h-4 rounded accent-brand-500" />
+            <span class="text-sm text-slate-600">
+              <b class="text-slate-800">Gunakan Pollinations gratis untuk fitur teks</b>
+              <span class="block text-xs text-slate-400">
+                Text ke Gambar, Poster, Banner &amp; Logo jalan tanpa biaya (tanpa API key). Fitur foto (ubah background, dll.) tetap butuh API key.
+              </span>
+            </span>
+          </label>
           <p v-if="message" class="text-sm text-emerald-600">{{ message }}</p>
           <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
           <div v-if="testResult" class="text-sm rounded-lg px-3 py-2 border" :class="testResult.ok ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-red-700 bg-red-50 border-red-200'">

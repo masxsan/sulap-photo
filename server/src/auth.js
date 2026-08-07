@@ -32,6 +32,7 @@ function publicUser(row) {
     email: row.email,
     credits: row.credits,
     themes: Array.isArray(themes) ? themes : [],
+    useFreeTxt: !!row.use_free_txt,
     providerConfigured: !!(row.provider_key || config.openaiApiKey),
     provider: row.provider_key ? 'user' : config.defaultProvider,
     createdAt: row.created_at,

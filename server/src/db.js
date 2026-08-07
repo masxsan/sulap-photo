@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   provider_key TEXT DEFAULT '',
   provider_base_url TEXT DEFAULT '',
   provider_model TEXT DEFAULT '',
+  use_free_txt INTEGER NOT NULL DEFAULT 0,
   themes TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -80,6 +81,9 @@ CREATE INDEX IF NOT EXISTS idx_job_inputs_batch ON job_inputs(batch_id);
   const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   if (!userCols.includes('themes')) {
     db.exec("ALTER TABLE users ADD COLUMN themes TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!userCols.includes('use_free_txt')) {
+    db.exec('ALTER TABLE users ADD COLUMN use_free_txt INTEGER NOT NULL DEFAULT 0');
   }
 }
 

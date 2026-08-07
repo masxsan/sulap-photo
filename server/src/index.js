@@ -71,10 +71,12 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   if (baseUrl && !ascii(baseUrl)) {
     return res.status(400).json({ error: 'Base URL mengandung karakter tidak valid. Ketik ulang secara manual.' });
   }
-  db.prepare('UPDATE users SET provider_key = ?, provider_base_url = ?, provider_model = ? WHERE id = ?').run(
+  const useFreeTxt = req.body.useFreeTxt ? 1 : 0;
+  db.prepare('UPDATE users SET provider_key = ?, provider_base_url = ?, provider_model = ?, use_free_txt = ? WHERE id = ?').run(
     String(apiKey || '').trim(),
     String(baseUrl || '').trim(),
     String(model || '').trim(),
+    useFreeTxt,
     req.user.id
   );
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
