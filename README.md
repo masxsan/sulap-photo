@@ -25,13 +25,14 @@ Terinspirasi dari konsep aplikasi AI-photo modern, dibangun untuk dipelajari, di
 |---|---|
 | 🖼️ **Text ke Gambar** | Tulis deskripsi → AI membuatkan gambar. |
 | 🎭 **Ubah Background** | Ganti latar foto dengan sekali prompt. |
-| 📸 **Foto Studio Pro** | Ubah foto biasa jadi hasil studio profesional. |
-| 👶 **Filter Umur** | Lihat wajah di usia yang berbeda. |
-| 😄 **Ubah Ekspresi** | Senyum, tertawa, serius — sesuai keinginan. |
-| 📢 **Poster & Banner** | Desain promosi siap pakai. |
+| 🌦️ **Ubah Cuaca** | Cerah → hujan, salju, senja, atau malam berbintang. |
+| 🎨 **Jadikan Kartun** | Anime, kartun 3D, cat air, pixel art, komik. |
+| ⭐ **Foto Bareng Artis** | Berdiri "bersama" tokoh favoritmu. |
+| 📸 **Pas Foto & Upscale HD** | Pas foto resmi + perbesar & pertajam hasil. |
+| 🏠 **Desain Interior** | Lihat ruanganmu bergaya minimalis, mewah, dll. |
+| 📢 **Poster, Banner & Logo** | Desain promosi dan logo siap pakai. |
 
-Semua fitur didukung sistem **kredit** yang mudah dipahami, plus **provider AI yang bisa ditukar** —
-menggunakan engine gratis bawaan atau API key milik Anda sendiri.
+Total **15 fitur AI** — semuanya didukung sistem **kredit** yang mudah dipahami, plus **provider AI yang bisa ditukar** — menggunakan engine gratis bawaan atau API key milik Anda sendiri.
 
 ## 🧱 Tech Stack
 
