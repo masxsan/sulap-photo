@@ -56,7 +56,8 @@ export const api = {
   async fileUrl(path) {
     const token = getToken();
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const res = await fetch(BASE + path, { headers });
+    const full = path.startsWith('/api/') ? path : BASE + path;
+    const res = await fetch(full, { headers });
     if (!res.ok) throw new Error('Gagal memuat file');
     return URL.createObjectURL(await res.blob());
   },
