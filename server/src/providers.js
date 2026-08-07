@@ -72,8 +72,11 @@ async function pFetch(url, init, { retries = 3 } = {}) {
     }
   }
   const cause = lastErr?.cause?.code || lastErr?.cause?.message || lastErr?.message || 'kesalahan tak dikenal';
+  const friendly = /ByteString/.test(cause)
+    ? 'API key atau Base URL mengandung karakter non-ASCII (mis. tanda pisah "—"). Hapus dan ketik ulang secara manual.'
+    : cause;
   const e = new Error(
-    `Gagal terhubung ke provider (${url}): ${cause}. Cek koneksi internet, proxy/VPN, atau firewall Anda, lalu coba lagi.`
+    `Gagal terhubung ke provider (${url}): ${friendly}. Cek koneksi internet, proxy/VPN, atau firewall Anda, lalu coba lagi.`
   );
   e.status = 502;
   throw e;

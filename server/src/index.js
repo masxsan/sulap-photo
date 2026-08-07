@@ -62,6 +62,15 @@ app.get('/api/me', auth.requireAuth, (req, res) => {
 
 app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   const { apiKey, baseUrl, model } = req.body || {};
+  const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
+  if (apiKey && !ascii(apiKey)) {
+    return res.status(400).json({
+      error: 'API key mengandung karakter tidak valid (mis. tanda pisah "—"). Hapus dan ketik ulang secara manual.',
+    });
+  }
+  if (baseUrl && !ascii(baseUrl)) {
+    return res.status(400).json({ error: 'Base URL mengandung karakter tidak valid. Ketik ulang secara manual.' });
+  }
   db.prepare('UPDATE users SET provider_key = ?, provider_base_url = ?, provider_model = ? WHERE id = ?').run(
     String(apiKey || '').trim(),
     String(baseUrl || '').trim(),
@@ -76,8 +85,12 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
 app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const body = req.body || {};
+  const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
   const apiKey = String(body.apiKey || row?.provider_key || '').trim();
   const base = providers.normalizeBase(body.baseUrl || row?.provider_base_url, config.openaiBaseUrl);
+  if (apiKey && !ascii(apiKey)) {
+    return res.json({ ok: false, url: base, message: 'API key mengandung karakter non-ASCII (mis. tanda pisah "—"). Hapus dan ketik ulang secara manual.' });
+  }
   if (!apiKey) {
     return res.json({ ok: false, url: base, message: 'API key belum diisi di Pengaturan.' });
   }
