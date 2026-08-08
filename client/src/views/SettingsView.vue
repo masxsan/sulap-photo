@@ -42,19 +42,13 @@ function applyUser() {
   apiKey.value = ''; // key tidak pernah dikembalikan ke client
 }
 
-// Gabungkan model statis (fallback) + hasil discovery. Model tersimpan dari DB
-// disisipkan bila belum ada di daftar agar nilai user tidak hilang dari pilihan.
-function mergeModelOptions(dynamic) {
-  const statik = activeProvider.value?.models || [];
-  const seen = new Set();
-  const merged = [];
-  for (const m of [...statik, ...(dynamic || []), model.value]) {
-    if (m && !seen.has(m)) {
-      seen.add(m);
-      merged.push(m);
-    }
-  }
-  modelOptions.value = merged;
+// Isi opsi dropdown Model. Prioritas: hasil discovery API (dinamis). Bila gagal/kosong,
+// pakai daftar statis sebagai fallback. Model tersimpan dari DB disisipkan bila belum
+// ada di daftar agar nilai user tidak hilang dari pilihan.
+function setModelOptions(dynamic) {
+  const list = dynamic && dynamic.length ? [...dynamic] : [...(activeProvider.value?.models || [])];
+  if (model.value && !list.includes(model.value)) list.push(model.value);
+  modelOptions.value = list;
 }
 
 async function loadModels() {
@@ -67,14 +61,21 @@ async function loadModels() {
       apiKey: apiKey.value,
       baseUrl: baseUrl.value,
     });
-    mergeModelOptions(data.models);
     if (data.ok && data.models.length) {
+      setModelOptions(data.models);
+      // Auto-pilih: model tersimpan bila masih ada; selain itu model pertama.
+      if (!model.value || !data.models.includes(model.value)) {
+        model.value = data.models[0];
+      }
       modelsMsg.value = `${data.models.length} model image-generation ditemukan dari ${p.name}. Pilih salah satu dari daftar.`;
     } else if (data.ok && !data.models.length) {
+      setModelOptions();
       modelsMsg.value = `Tidak ditemukan model Gemini yang kompatibel untuk generate image pada API Key ini.`;
     } else if (!data.ok) {
+      setModelOptions();
       modelsMsg.value = data.message || 'Model discovery gagal.';
     } else {
+      setModelOptions();
       modelsMsg.value = 'Model discovery kosong — pakai daftar bawaan.';
     }
   } catch (e) {
@@ -91,6 +92,7 @@ async function onSelectProvider() {
   if (p) {
     baseUrl.value = p.defaultBaseUrl;
     apiKey.value = '';
+    model.value = '';
   }
   error.value = '';
   testResult.value = null;
@@ -111,7 +113,7 @@ onMounted(async () => {
   if (activeProvider.value) {
     // Base URL default bila user belum punya; field Model TIDAK diisi default.
     if (!baseUrl.value) baseUrl.value = activeProvider.value.defaultBaseUrl;
-    mergeModelOptions();
+    setModelOptions();
   }
   try {
     const data = await api.get('/wallet/transactions');
@@ -215,14 +217,16 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
             <div>
               <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Model</label>
               <div class="flex gap-2">
-                <input
+                <select
                   v-if="activeProvider"
                   v-model="model"
-                  type="text"
-                  list="provider-models"
+                  name="model"
+                  data-field="model"
                   class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
-                  :placeholder="activeProvider.id === 'gemini' ? 'Tekan Muat Model lalu pilih model' : (activeProvider.defaultModel || 'Ketik model')"
-                />
+                >
+                  <option value="" disabled>Pilih model...</option>
+                  <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+                </select>
                 <button
                   type="button"
                   @click="loadModels"
@@ -235,11 +239,8 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
                   <span class="text-xs font-semibold hidden sm:inline">Muat Model</span>
                 </button>
               </div>
-              <datalist id="provider-models">
-                <option v-for="m in modelOptions" :key="m" :value="m" />
-              </datalist>
               <p class="mt-1 text-[11px] text-slate-400">
-                Model tidak diisi otomatis. Tekan <b>"Muat Model"</b> untuk mengambil daftar model image-generation dari API {{ activeProvider?.name }}, lalu pilih salah satu.
+                Tekan <b>"Muat Model"</b> untuk mengambil daftar model image-generation dari API {{ activeProvider?.name }}. Model dipilih dari daftar akan otomatis masuk ke field ini.
               </p>
               <p v-if="modelsMsg" class="mt-0.5 text-[11px]" :class="modelsMsg.includes('Tidak ditemukan') ? 'text-amber-600' : 'text-brand-500'">{{ modelsMsg }}</p>
               <p v-if="modelNotListed" class="mt-0.5 text-[11px] text-amber-600">
