@@ -87,6 +87,11 @@ async function loadModels() {
       if (s.imageGeneration) parts.push(`✓ ${s.imageGeneration} mendukung image generation`);
       if (s.imageEditing) parts.push(`✓ ${s.imageEditing} mendukung image editing`);
       if (s.vision) parts.push(`✓ ${s.vision} vision / image input`);
+      // Discovery bisa mengembalikan daftar cadangan bila API rate-limited / offline
+      // (bukan kegagalan). Beri tahu user agar tidak salah sangka.
+      if (data.rateLimited) parts.push('⚠ model cadangan (API sedang rate-limited)');
+      else if (data.source === 'fallback') parts.push('⚠ daftar model cadangan');
+      else if (data.message) parts.push(`i ${data.message}`);
       modelsMsg.value = parts.join(' · ');
     } else if (data.ok && !list.length) {
       setModelOptions();

@@ -105,35 +105,6 @@ function providerLog({ provider, model, baseUrl, endpoint, method, status, ms, e
 // Ambil daftar model dari API provider. Tiap provider punya caranya sendiri.
 // Tidak pernah menampilkan/menyimpan API key ke log.
 
-async function geminiListModels({ apiKey, baseUrl }) {
-  const base = normalizeBase(baseUrl, config.geminiBaseUrl);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
-    const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
-    const text = await r.text().catch(() => '');
-    if (!r.ok) return { ok: false, models: [], message: `Google Gemini (${r.status}): ${text.slice(0, 160)}` };
-    let data = null;
-    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
-    // Filter model image-generation: nama mengandung 'image'/'imagen' dan mendukung generateContent
-    const models = (data?.models || [])
-      .filter((m) => {
-        const name = String(m.name || '');
-        const methods = m.supportedGenerationMethods || [];
-        const imageish = /image|imagen/i.test(name);
-        const canGen = methods.includes('generateContent') || methods.includes('GenerateContent');
-        return imageish && canGen;
-      })
-      .map((m) => String(m.name).replace(/^models\//, ''))
-      .sort();
-    return { ok: true, models };
-  } catch (err) {
-    return { ok: false, models: [], message: `Gagal ambil daftar model Gemini: ${err?.message || 'kesalahan tak dikenal'}` };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function openaiListModels({ apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.openaiBaseUrl);
   const ctrl = new AbortController();
@@ -313,7 +284,8 @@ async function testOpenAI({ apiKey, baseUrl }) {
 
 // Bentuk normal model yang dipakai di seluruh sistem.
 // { name, displayName, supportsText, supportsImageInput, supportsImageOutput,
-//   supportsImageEditing, supportsMultimodal, available }
+//   supportsImageEditing, supportsMultimodal, available, inputTokenLimit,
+//   outputTokenLimit, supportedMethods, priority, status }
 function modelEntry(name, displayName, caps = {}) {
   return {
     name,
@@ -324,6 +296,11 @@ function modelEntry(name, displayName, caps = {}) {
     supportsImageEditing: !!caps.supportsImageEditing,
     supportsMultimodal: !!caps.supportsMultimodal,
     available: caps.available !== false,
+    inputTokenLimit: caps.inputTokenLimit || 0,
+    outputTokenLimit: caps.outputTokenLimit || 0,
+    supportedMethods: caps.supportedMethods || [],
+    priority: caps.priority || 0,
+    status: caps.status || 'unknown',
   };
 }
 
@@ -368,6 +345,12 @@ function detectGeminiCapabilities(raw) {
     supportsImageOutput,
     supportsImageEditing,
     supportsMultimodal,
+    // Metadata dari API (jika tersedia) — disimpan, bukan diarang berdasarkan nama.
+    inputTokenLimit: raw.inputTokenLimit || 0,
+    outputTokenLimit: raw.outputTokenLimit || 0,
+    supportedMethods: methods,
+    priority: supportsImageOutput ? 1 : 2,
+    status: 'ready',
   });
 }
 
@@ -386,26 +369,55 @@ function summarizeModels(models) {
   };
 }
 
-// Pesan error Gemini ramah — tanpa informasi sensitif.
-function friendlyGeminiError(status, text) {
+// Klasifikasi + pesan ramah untuk error Gemini (tanpa informasi sensitif).
+// Mengenali: 400, 401, 403, 404, 429, 500, 503, dan error jaringan.
+// Mengembalikan { status, code, retryable, message }.
+// retryable = layak retry/fallback (429, 500, 503, transient network).
+// 429 != API key invalid — model tetap dipertahankan (point 6).
+function handleGeminiError(status, text, model) {
   let apiMsg = '';
   try {
     const d = JSON.parse(text);
     apiMsg = d?.error?.message || '';
   } catch { /* bukan JSON */ }
+  const code = (c) => ({ status, code: c, message: '' });
+
   if (status === 400 && /API key not valid|API_KEY_INVALID|API key expired|API key has expired/i.test(apiMsg)) {
-    return `Google Gemini API Key tidak valid (${status}).`;
+    return { ...code('AUTH'), retryable: false, message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
+  }
+  if (status === 400) {
+    return { ...code('BAD_REQUEST'), retryable: false, message: `Google Gemini menolak request (400): ${(apiMsg || text).slice(0, 160)}` };
   }
   if (status === 401 || status === 403) {
-    return `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.`;
-  }
-  if (status === 429) {
-    return 'Google Gemini: kuota/rate limit terlampaui (429). Coba lagi beberapa saat.';
+    return { ...code('AUTH'), retryable: false, message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
   }
   if (status === 404) {
-    return `Google Gemini: model/endpoint tidak ditemukan (404). Periksa nama model & Base URL.`;
+    return { ...code('NOT_FOUND'), retryable: false, message: `Model tidak tersedia untuk Google Gemini${model ? ': ' + model : ''} (404). Periksa nama model & Base URL.` };
   }
-  return `Google Gemini (${status}): ${(apiMsg || text).slice(0, 160)}`;
+  if (status === 429) {
+    return {
+      ...code('RATE_LIMITED'),
+      retryable: true,
+      message: `Quota/rate limit exceeded (429). Model${model ? ' ' + model : ''} ditemukan tetapi sementara tidak dapat digunakan. Silakan coba lagi beberapa saat.`,
+    };
+  }
+  if (status === 500 || status === 503) {
+    return { ...code('SERVER'), retryable: true, message: `Google Gemini sedang sibuk/bermasalah (${status}). Silakan coba lagi beberapa saat.` };
+  }
+  return { ...code('OTHER'), retryable: false, message: `Google Gemini (${status}): ${(apiMsg || text).slice(0, 160)}` };
+}
+
+// Bungkus error Gemini: attach code/retryable/model agar lapisan atas (jobs.js,
+// frontend) bisa bereaksi — tanpa menyimpan API key di pesan.
+function geminiError(status, text, model) {
+  const h = handleGeminiError(status, text, model);
+  const e = new Error(h.message);
+  e.code = h.code;
+  e.retryable = h.retryable;
+  e.status = h.status;
+  e.model = model || null;
+  e.gemini = true;
+  return e;
 }
 
 // ---------- Adapter: Google Gemini (generativelanguage.googleapis.com) ----------
@@ -442,14 +454,21 @@ const GEMINI_MODELS = [
   },
 ].map(detectGeminiCapabilities).filter(Boolean);
 
+// Tidur singkat untuk backoff (bukan promisify agar ringkas).
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function geminiListModels({ apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
+  const attempt = async (delayMs) => {
+    if (delayMs) await sleepMs(delayMs);
+    if (ctrl.signal.aborted) throw new Error('timeout');
     const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
     const text = await r.text().catch(() => '');
-    if (!r.ok) return { ok: false, models: [], message: friendlyGeminiError(r.status, text) };
+    if (!r.ok) throw Object.assign(geminiError(r.status, text), { text, statusCode: r.status });
     let data = null;
     try { data = JSON.parse(text); } catch { /* bukan JSON */ }
     // Ambil SEMUA model yang bisa dipanggil lewat generateContent (bukti dari API),
@@ -458,8 +477,42 @@ async function geminiListModels({ apiKey, baseUrl }) {
       .map(detectGeminiCapabilities)
       .filter(Boolean)
       .sort((a, b) => a.name.localeCompare(b.name));
-    return { ok: true, models, summary: summarizeModels(models) };
+    return { ok: true, models, summary: summarizeModels(models), source: 'api' };
+  };
+  try {
+    try {
+      return await attempt(0);
+    } catch (err) {
+      // Retry kecil untuk 429 / 5xx / transient — discovery tidak boleh cepat gagal.
+      if (err?.statusCode === 429 || err?.statusCode === 500 || err?.statusCode === 503 || err?.status === 502) {
+        const delays = [1200, 2500];
+        for (const d of delays) {
+          try {
+            return await attempt(d);
+          } catch (e2) {
+            if (e2?.statusCode !== 429 && e2?.statusCode !== 500 && e2?.statusCode !== 503 && e2?.status !== 502) throw e2;
+          }
+        }
+      }
+      throw err;
+    }
   } catch (err) {
+    // Discovery gagal (429, 5xx, network). Jangan gagalkan "Muat Model":
+    // kembalikan daftar cadangan statis sebagai fallback + catatan rate-limit,
+    // supaya user tetap punya model untuk dipilih (point 3/4/6).
+    if (err?.code === 'RATE_LIMITED') {
+      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', rateLimited: true, message: handleGeminiError(429, '', '').message };
+    }
+    if (err?.statusCode >= 500 || err?.status === 502) {
+      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', message: `Google Gemini tidak merespons (${err.statusCode || err.status || '5xx'}). Menampilkan daftar model cadangan.` };
+    }
+    // Kegagalan jaringan (fetch TypeError) saat discovery — fallback juga.
+    if (err?.code === 'NETWORK' || err?.cause?.code || err?.message?.startsWith('fetch failed')) {
+      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', message: `Gagal terhubung ke Google Gemini saat memuat model. Menampilkan daftar model cadangan.` };
+    }
+    if (err?.code === 'AUTH' || err?.code === 'NOT_FOUND') {
+      return { ok: false, models: [], message: handleGeminiError(err.statusCode || err.status, err.text || '').message };
+    }
     return { ok: false, models: [], message: `Gagal ambil daftar model Gemini: ${err?.message || 'kesalahan tak dikenal'}` };
   } finally {
     clearTimeout(timer);
@@ -487,8 +540,8 @@ async function geminiProbeImage({ apiKey, baseUrl, model }) {
     let data = null;
     try { data = JSON.parse(text); } catch { /* bukan JSON */ }
     if (!res.ok) {
-      providerLog({ provider: 'gemini', model, baseUrl: base, endpoint, method: 'POST', status: res.status, ms: 0, error: friendlyGeminiError(res.status, text) });
-      throw new Error(friendlyGeminiError(res.status, text));
+      providerLog({ provider: 'gemini', model, baseUrl: base, endpoint, method: 'POST', status: res.status, ms: 0, error: handleGeminiError(res.status, text).message });
+      throw geminiError(res.status, text, model);
     }
     const partsOut = data?.candidates?.[0]?.content?.parts || [];
     const hasImage = partsOut.some((p) => p.inlineData?.data || p.inline_data?.data);
@@ -499,16 +552,62 @@ async function geminiProbeImage({ apiKey, baseUrl, model }) {
   }
 }
 
+// Satu percobaan generate ke satu model. Mengembalikan Buffer gambar.
+// Error diklasifikasikan via geminiError() — retry/fallback di lapisan atas.
+async function geminiGenerateOnce({ endpoint, model, apiKey, body, started, ctrl }) {
+  let res;
+  try {
+    res = await pFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    // pFetch: kegagalan jaringan (DNS, timeout, TLS) — retryable.
+    const e = new Error(err.message);
+    e.code = 'NETWORK';
+    e.retryable = true;
+    e.status = 502;
+    e.model = model;
+    e.gemini = true;
+    throw e;
+  }
+  const text = await res.text().catch(() => '');
+  let data = null;
+  try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+  if (!res.ok) {
+    const e = geminiError(res.status, text, model);
+    providerLog({ provider: 'gemini', model, baseUrl: endpoint.split('/models/')[0], endpoint, method: 'POST', status: res.status, ms: Date.now() - started, error: e.message });
+    throw e;
+  }
+  providerLog({ provider: 'gemini', model, baseUrl: endpoint.split('/models/')[0], endpoint, method: 'POST', status: res.status, ms: Date.now() - started });
+  const candidate = data?.candidates?.[0];
+  const partsOut = candidate?.content?.parts || [];
+  const imgPart = partsOut.find((p) => p.inlineData?.data || p.inline_data?.data);
+  const raw = imgPart?.inlineData?.data || imgPart?.inline_data?.data;
+  if (raw) {
+    return Buffer.from(raw, 'base64');
+  }
+  // Gemini bisa menolak permintaan gambar di beberapa model
+  const finish = candidate?.finishReason || '';
+  if (finish) {
+    throw new Error(`Google Gemini menolak permintaan (${finish}). Pastikan model mendukung pembuatan gambar.`);
+  }
+  throw new Error('Google Gemini tidak mengembalikan gambar. Periksa model & kredit API.');
+}
+
+// Generate dengan retry/backoff (429/5xx/network) lalu fallback ke model lain
+// (404/429/5xx/network) bila model terpilih gagal. Prioritas model image-gen dulu.
+// API key invalid (401/403) TIDAK di-retry dan TIDAK di-fallback (point 6).
 async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
-  // Model selalu diambil dari pilihan user (tersimpan di DB / SettingsView).
-  // Tidak fallback ke daftar statis supaya model yang sudah pensiun tidak muncul.
-  const m = (model || config.geminiModel || '').trim();
+  // Normalisasi: terima "gemini-..." atau "models/gemini-..." — keduanya dipakai
+  // bergantung sumber (DB discovery menyimpan tanpa prefix; input lain bisa ber-prefix).
+  const m = (model || config.geminiModel || '').trim().replace(/^models\//, '');
   if (!m) {
     throw new Error('Model Gemini belum dipilih. Buka Pengaturan → AI Providers → Google Gemini → Muat Model, lalu pilih model yang tersedia.');
   }
-  const endpoint = `${base}/models/${encodeURIComponent(m)}:generateContent`;
-  const started = Date.now();
 
   const parts = [];
   for (const img of images || []) {
@@ -531,80 +630,57 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
     body.generationConfig.aspectRatio = ratio; // 4:3, 3:4, 16:9, 9:16
   }
 
+  const started = Date.now();
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 180000);
-  try {
-    const res = await pFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    const text = await res.text().catch(() => '');
-    let data = null;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      /* bukan JSON */
-    }
+  // Batas total seluruh percobaan (retry + fallback), bukan per-attempt.
+  const timer = setTimeout(() => ctrl.abort(), 240000);
 
-    if (!res.ok) {
-      const apiMsg = data?.error?.message || text.slice(0, 200);
-      providerLog({
-        provider: 'gemini',
-        model: m,
-        baseUrl: base,
-        endpoint,
-        method: 'POST',
-        status: res.status,
-        ms: Date.now() - started,
-        error: apiMsg,
-      });
-      if (res.status === 401 || res.status === 403) {
-        throw new Error(`Google Gemini API Key tidak valid (${res.status}). Pastikan key benar & masih aktif.`);
-      }
-      if (res.status === 404) {
-        // Model tidak ada / pensiun — bantu user memilih model yang tersedia.
-        let hint = '';
-        try {
-          const d = await geminiListModels({ apiKey, baseUrl });
-          if (d.ok && d.models.length) {
-            hint = ` Model yang tersedia: ${d.models.slice(0, 8).map((m) => m.name).join(', ')}.`;
-          }
-        } catch {
-          /* log discovery gagal, lanjut dengan pesan umum */
+  const attempt = async (candidate) => {
+    const endpoint = `${base}/models/${encodeURIComponent(candidate)}:generateContent`;
+    const backoff = [0, 2000, 5000];
+    let lastErr = null;
+    for (let i = 0; i < backoff.length; i++) {
+      if (i > 0) await sleepMs(backoff[i]);
+      try {
+        return await geminiGenerateOnce({ endpoint, model: candidate, apiKey, body, started, ctrl });
+      } catch (err) {
+        lastErr = err;
+        // Retry backoff hanya untuk 429 / 5xx / network. Error lain langsung lempar
+        // (404 = model pensiun, cukup sekali, fallback di lapisan atas).
+        if (err.code === 'RATE_LIMITED' || err.code === 'SERVER' || err.code === 'NETWORK' || err.status === 502) {
+          continue;
         }
-        throw new Error(`Model tidak tersedia untuk Google Gemini: ${m}.${hint} Pilih model dari daftar di Pengaturan → AI Providers.`);
+        throw err;
       }
-      throw new Error(`Google Gemini error (${res.status}): ${apiMsg}`);
     }
+    throw lastErr;
+  };
 
-    providerLog({
-      provider: 'gemini',
-      model: m,
-      baseUrl: base,
-      endpoint,
-      method: 'POST',
-      status: res.status,
-      ms: Date.now() - started,
-    });
-
-    const candidate = data?.candidates?.[0];
-    const partsOut = candidate?.content?.parts || [];
-    const imgPart = partsOut.find((p) => p.inlineData?.data || p.inline_data?.data);
-    const raw = imgPart?.inlineData?.data || imgPart?.inline_data?.data;
-    if (raw) {
-      return Buffer.from(raw, 'base64');
+  try {
+    try {
+      return await attempt(m);
+    } catch (err) {
+      // API key invalid / bad request / tak dikenal: tidak ada gunanya fallback.
+      if (err.code === 'AUTH' || err.code === 'BAD_REQUEST' || err.code === 'OTHER') throw err;
+      // 404 / 429 / 5xx / network pada model terpilih: coba model cadangan.
+      const d = await geminiListModels({ apiKey, baseUrl }).catch(() => null);
+      const fallbacks = (d && d.ok && d.models.length
+        ? d.models.filter((x) => x.supportsImageOutput && x.name !== m)
+        : [])
+        .sort((a, b) => (a.priority || 0) - (b.priority || 0) || a.name.localeCompare(b.name))
+        .map((x) => x.name);
+      if (!fallbacks.length) throw err;
+      let lastErr = err;
+      for (const cand of fallbacks) {
+        try {
+          return await attempt(cand);
+        } catch (e2) {
+          lastErr = e2;
+          if (e2.code === 'AUTH' || e2.code === 'BAD_REQUEST' || e2.code === 'OTHER') break;
+        }
+      }
+      throw lastErr;
     }
-    // Gemini bisa menolak permintaan gambar di beberapa model
-    const finish = candidate?.finishReason || '';
-    if (finish) {
-      throw new Error(`Google Gemini menolak permintaan (${finish}). Pastikan model mendukung pembuatan gambar.`);
-    }
-    throw new Error('Google Gemini tidak mengembalikan gambar. Periksa model & kredit API.');
   } finally {
     clearTimeout(timer);
   }
@@ -612,8 +688,12 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
 
 // Test koneksi bertahap: koneksi -> key valid -> model discovery -> image tersedia
 // -> (bila ada model terpilih) probe image generation. Hasil `steps` untuk UI.
+// Test TIDAK memanggil probe bila hanya "discovery" — probe hanya dijalankan
+// saat test eksplisit dipicu user (point 7). 429 pada probe bukanlah kegagalan
+// koneksi/key — dilaporkan sebagai langkah info, bukan error fatal.
 async function testGemini({ apiKey, baseUrl, model }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
+  const modelName = (model || '').trim().replace(/^models\//, '');
   const steps = [];
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
@@ -621,9 +701,9 @@ async function testGemini({ apiKey, baseUrl, model }) {
     const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
     const text = await r.text().catch(() => '');
     if (!r.ok) {
-      const msg = friendlyGeminiError(r.status, text);
-      steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: msg });
-      return { ok: false, url: base, status: r.status, steps, message: msg };
+      const h = handleGeminiError(r.status, text);
+      steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: h.message });
+      return { ok: false, url: base, status: r.status, steps, message: h.message };
     }
     steps.push({ label: 'Koneksi ke Google Gemini API', ok: true, detail: 'API dapat diakses.' });
     steps.push({ label: 'API Key valid', ok: true, detail: 'Key diterima oleh Google Gemini.' });
@@ -641,17 +721,24 @@ async function testGemini({ apiKey, baseUrl, model }) {
       steps.push({ label: 'Image generation tersedia', ok: false, detail: 'Tidak ada model image generation yang terdeteksi pada key ini.' });
     }
 
-    if (model) {
-      const sel = models.find((m) => m.name === model);
+    // Probe image generation HANYA bila user eksplisit meminta test (bukan saat
+    // "Muat Model"/discovery) dan model terpilih mendukung image output.
+    if (modelName) {
+      const sel = models.find((m) => m.name === modelName);
       if (sel && sel.supportsImageOutput) {
         try {
-          await geminiProbeImage({ apiKey, baseUrl, model });
-          steps.push({ label: `Probe model "${model}"`, ok: true, detail: 'Model berhasil menghasilkan gambar uji.' });
+          await geminiProbeImage({ apiKey, baseUrl, model: modelName });
+          steps.push({ label: `Probe model "${modelName}"`, ok: true, detail: 'Model berhasil menghasilkan gambar uji.' });
         } catch (e) {
-          steps.push({ label: `Probe model "${model}"`, ok: false, detail: e.message });
+          if (e?.code === 'RATE_LIMITED') {
+            // 429 saat probe: bukan masalah key/koneksi — info, jangan hard-fail.
+            steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: `${e.message} Model tetap terdaftar dan akan diuji lagi nanti.` });
+          } else {
+            steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: e.message });
+          }
         }
       } else if (sel) {
-        steps.push({ label: `Probe model "${model}"`, ok: false, detail: 'Model terpilih tidak mendukung image generation.' });
+        steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: 'Model terpilih tidak mendukung image generation.' });
       }
     }
 
@@ -833,4 +920,6 @@ module.exports = {
   testOpenAI,
   testGemini,
   testPollinations,
+  handleGeminiError,
+  geminiError,
 };
