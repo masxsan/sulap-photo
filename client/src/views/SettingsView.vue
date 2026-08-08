@@ -42,8 +42,8 @@ function applyUser() {
   apiKey.value = ''; // key tidak pernah dikembalikan ke client
 }
 
-// Gabungkan model statis (registry) + hasil discovery, sisipkan model tersimpan
-// bila belum ada di daftar agar nilai dari DB tidak pernah hilang dari pilihan.
+// Gabungkan model statis (fallback) + hasil discovery. Model tersimpan dari DB
+// disisipkan bila belum ada di daftar agar nilai user tidak hilang dari pilihan.
 function mergeModelOptions(dynamic) {
   const statik = activeProvider.value?.models || [];
   const seen = new Set();
@@ -69,7 +69,9 @@ async function loadModels() {
     });
     mergeModelOptions(data.models);
     if (data.ok && data.models.length) {
-      modelsMsg.value = `${data.models.length} model ditemukan dari ${p.name}.`;
+      modelsMsg.value = `${data.models.length} model image-generation ditemukan dari ${p.name}. Pilih salah satu dari daftar.`;
+    } else if (data.ok && !data.models.length) {
+      modelsMsg.value = `Tidak ditemukan model Gemini yang kompatibel untuk generate image pada API Key ini.`;
     } else if (!data.ok) {
       modelsMsg.value = data.message || 'Model discovery gagal.';
     } else {
@@ -83,11 +85,11 @@ async function loadModels() {
 }
 
 async function onSelectProvider() {
-  // Ganti provider -> reset ke default-nya agar tidak salah kirim key ke endpoint lain
+  // Ganti provider -> set Base URL default, TAPI jangan auto-isi field Model.
+  // Model diisi dari "Muat Model" (discovery API) atau pilihan user.
   const p = activeProvider.value;
   if (p) {
     baseUrl.value = p.defaultBaseUrl;
-    model.value = p.defaultModel;
     apiKey.value = '';
   }
   error.value = '';
@@ -107,9 +109,8 @@ onMounted(async () => {
   }
   applyUser();
   if (activeProvider.value) {
-    // nilai default provider bila user belum punya (hindari menimpa milik user)
+    // Base URL default bila user belum punya; field Model TIDAK diisi default.
     if (!baseUrl.value) baseUrl.value = activeProvider.value.defaultBaseUrl;
-    if (!model.value) model.value = activeProvider.value.defaultModel;
     mergeModelOptions();
   }
   try {
@@ -220,7 +221,7 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
                   type="text"
                   list="provider-models"
                   class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
-                  :placeholder="activeProvider.defaultModel"
+                  :placeholder="activeProvider.id === 'gemini' ? 'Tekan Muat Model lalu pilih model' : (activeProvider.defaultModel || 'Ketik model')"
                 />
                 <button
                   type="button"
@@ -238,9 +239,9 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
                 <option v-for="m in modelOptions" :key="m" :value="m" />
               </datalist>
               <p class="mt-1 text-[11px] text-slate-400">
-                Bisa diketik bebas (model tersimpan di database selalu dipakai apa adanya). Daftar bawah diisi otomatis dari API provider.
+                Model tidak diisi otomatis. Tekan <b>"Muat Model"</b> untuk mengambil daftar model image-generation dari API {{ activeProvider?.name }}, lalu pilih salah satu.
               </p>
-              <p v-if="modelsMsg" class="mt-0.5 text-[11px] text-brand-500">{{ modelsMsg }}</p>
+              <p v-if="modelsMsg" class="mt-0.5 text-[11px]" :class="modelsMsg.includes('Tidak ditemukan') ? 'text-amber-600' : 'text-brand-500'">{{ modelsMsg }}</p>
               <p v-if="modelNotListed" class="mt-0.5 text-[11px] text-amber-600">
                 Model tersimpan tidak terdeteksi di daftar provider — kemungkinan sudah tidak tersedia. Pilih model dari daftar di atas, atau tekan "Muat Model" untuk memuat ulang.
               </p>

@@ -303,23 +303,26 @@ async function testOpenAI({ apiKey, baseUrl }) {
 // ---------- Adapter: Google Gemini (generativelanguage.googleapis.com) ----------
 
 const GEMINI_DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-// Daftar model image-generation Gemini. Perbarui mengikuti rilis resmi.
-// `gemini-2.0-flash-exp-image-generation` sudah pensiun (404) — dipertahankan
-// agar user dengan model lama masih dapat melihat/menggantinya lewat discovery.
+// Fallback model image-generation Gemini bila discovery API gagal/offline.
+// Model lama (gemini-2.0-flash-*-image-generation, gemini-2.5-flash-image-preview)
+// sudah pensiun (404) dan TIDAK lagi didaftarkan di sini.
 // Model aktif (2026): gemini-2.5-flash-image (Nano Banana, stable),
 // gemini-3.1-flash-image-preview (Nano Banana 2), gemini-3-pro-image-preview.
+// Sumber utama daftar model adalah model discovery dari API Gemini.
 const GEMINI_MODELS = [
   'gemini-2.5-flash-image',
   'gemini-3.1-flash-image-preview',
   'gemini-3-pro-image-preview',
-  'gemini-2.5-flash-image-preview',
-  'gemini-2.0-flash-exp-image-generation',
-  'gemini-2.0-flash-preview-image-generation',
 ];
 
 async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
-  const m = model || config.geminiModel || GEMINI_MODELS[0];
+  // Model selalu diambil dari pilihan user (tersimpan di DB / SettingsView).
+  // Tidak fallback ke daftar statis supaya model yang sudah pensiun tidak muncul.
+  const m = (model || config.geminiModel || '').trim();
+  if (!m) {
+    throw new Error('Model Gemini belum dipilih. Buka Pengaturan → AI Providers → Google Gemini → Muat Model, lalu pilih model yang tersedia.');
+  }
   const endpoint = `${base}/models/${encodeURIComponent(m)}:generateContent`;
   const started = Date.now();
 
@@ -482,7 +485,8 @@ const registry = {
     requiresApiKey: true,
     supportsImg2img: true,
     defaultBaseUrl: config.geminiBaseUrl,
-    defaultModel: config.geminiModel || GEMINI_MODELS[0],
+    // Default KOSONG: model diisi dari hasil "Muat Model" (discovery API), bukan hardcoded.
+    defaultModel: config.geminiModel || '',
     models: GEMINI_MODELS,
     generate: geminiGenerate,
     test: testGemini,
@@ -529,7 +533,9 @@ function resolveProvider(feature, user) {
         generate: p.generate,
         apiKey: userKey,
         baseUrl: user.provider_base_url || p.defaultBaseUrl,
-        model: user.provider_model || p.defaultModel,
+        // Model user apa adanya (dari DB). Bila kosong, biarkan kosong —
+        // geminiGenerate akan memberi pesan jelas, jangan fallback statis.
+        model: user.provider_model || '',
       };
     }
   }
