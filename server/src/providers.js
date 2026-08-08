@@ -145,9 +145,17 @@ async function openaiListModels({ apiKey, baseUrl }) {
     let data = null;
     try { data = JSON.parse(text); } catch { /* bukan JSON */ }
     const ids = (data?.data || []).map((m) => m.id).filter(Boolean);
-    // Prioritaskan model pembuat gambar; bila tak ada, tampilkan semua (untuk API OpenAI-compatible).
+    // OpenAI /models tidak menyediakan metadata capability. Prioritaskan model
+    // pembuat gambar (nama mengandung gpt-image/dall-e/image). Bila tak ada,
+    // tampilkan model LLM generik (capability text saja — tidak diklaim image).
     const imageish = ids.filter((id) => /gpt-image|dall-e|image/i.test(id));
-    return { ok: true, models: imageish.length ? imageish : ids.slice(0, 50) };
+    const selected = imageish.length ? imageish : ids.slice(0, 50);
+    const models = selected.map((id) =>
+      imageish.length
+        ? modelEntry(id, id, { supportsImageOutput: true, supportsImageInput: true, supportsImageEditing: true })
+        : modelEntry(id, id, { supportsText: true })
+    );
+    return { ok: true, models, summary: summarizeModels(models) };
   } catch (err) {
     return { ok: false, models: [], message: `Gagal ambil daftar model OpenAI: ${err?.message || 'kesalahan tak dikenal'}` };
   } finally {
@@ -160,7 +168,8 @@ async function listProviderModels(providerId, opts) {
   const p = getProvider(providerId);
   if (!p) return { ok: false, models: [], message: `Provider "${providerId}" tidak dikenal.` };
   if (typeof p.listModels === 'function') return p.listModels(opts);
-  return { ok: true, models: p.models || [] };
+  const models = Array.isArray(p.models) ? p.models : [];
+  return { ok: true, models, summary: summarizeModels(models) };
 }
 
 // ---------- Adapter: Pollinations (gratis, txt2img) ----------
@@ -300,20 +309,195 @@ async function testOpenAI({ apiKey, baseUrl }) {
   }
 }
 
+// ---------- Capability detection ----------
+
+// Bentuk normal model yang dipakai di seluruh sistem.
+// { name, displayName, supportsText, supportsImageInput, supportsImageOutput,
+//   supportsImageEditing, supportsMultimodal, available }
+function modelEntry(name, displayName, caps = {}) {
+  return {
+    name,
+    displayName: displayName || name,
+    supportsText: !!caps.supportsText,
+    supportsImageInput: !!caps.supportsImageInput,
+    supportsImageOutput: !!caps.supportsImageOutput,
+    supportsImageEditing: !!caps.supportsImageEditing,
+    supportsMultimodal: !!caps.supportsMultimodal,
+    available: caps.available !== false,
+  };
+}
+
+// Deteksi capability model Gemini dari metadata API (bukan hanya nama).
+// Bukti PRIMER = supportedGenerationMethods memuat generateContent (model bisa
+// dipanggil lewat endpoint yang sama). Capability lain dibaca dari deskripsi /
+// display name yang ditulis provider. Tanpa bukti, capability dianggap false
+// (tidak menyatakan image generation tanpa bukti — point 5).
+function detectGeminiCapabilities(raw) {
+  const name = String(raw.name || '').replace(/^models\//, '').trim();
+  if (!name) return null;
+  const methods = raw.supportedGenerationMethods || [];
+  const canGenerate = methods.some((m) => /generateContent/i.test(String(m)));
+  // Tanpa bukti generateContent, model tidak dapat dipakai lewat endpoint ini
+  // (mis. model embedding/retrieval) — keluarkan dari daftar.
+  if (!canGenerate) return null;
+  const displayName = String(raw.displayName || '').trim();
+  const desc = String(raw.description || '');
+  const lname = name.toLowerCase();
+  const blob = `${displayName} ${desc}`.toLowerCase();
+
+  // Bukti tambahan dari metadata tertulis provider:
+  const saysImageGeneration = /image generation|image editing|image-to-image|text-to-image|nano banana|image model|generate images|image-to-3d|editing/i.test(blob);
+  const saysVision = /vision|multimodal|image understanding|image input|image(s)?\b/i.test(blob);
+  const isImagen = /^imagen/i.test(name);
+  const imageGenName = /flash-image|image-generation|image-gen|image-preview|imagen/i.test(lname);
+
+  // Bukti PRIMER: model harus bisa dipanggil lewat generateContent.
+  const supported = canGenerate;
+
+  const supportsImageOutput = supported && (imageGenName || saysImageGeneration);
+  // Image input: model bukan imagen (imagen = text->image saja) dan ada bukti
+  // multimodal/vision/penanganan gambar.
+  const supportsImageInput = supported && !isImagen && (saysVision || imageGenName);
+  const supportsText = supported && !isImagen;
+  const supportsImageEditing = supportsImageOutput && supportsImageInput;
+  const supportsMultimodal = supportsImageInput && supportsText;
+
+  return modelEntry(name, displayName || name, {
+    supportsText,
+    supportsImageInput,
+    supportsImageOutput,
+    supportsImageEditing,
+    supportsMultimodal,
+  });
+}
+
+// Ringkasan jumlah model per capability untuk pesan ke user.
+function summarizeModels(models) {
+  const text = models.filter((m) => m.supportsText);
+  const vision = models.filter((m) => m.supportsImageInput);
+  const imageGeneration = models.filter((m) => m.supportsImageOutput);
+  const imageEditing = models.filter((m) => m.supportsImageEditing);
+  return {
+    total: models.length,
+    text: text.length,
+    vision: vision.length,
+    imageGeneration: imageGeneration.length,
+    imageEditing: imageEditing.length,
+  };
+}
+
+// Pesan error Gemini ramah — tanpa informasi sensitif.
+function friendlyGeminiError(status, text) {
+  let apiMsg = '';
+  try {
+    const d = JSON.parse(text);
+    apiMsg = d?.error?.message || '';
+  } catch { /* bukan JSON */ }
+  if (status === 400 && /API key not valid|API_KEY_INVALID|API key expired|API key has expired/i.test(apiMsg)) {
+    return `Google Gemini API Key tidak valid (${status}).`;
+  }
+  if (status === 401 || status === 403) {
+    return `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.`;
+  }
+  if (status === 429) {
+    return 'Google Gemini: kuota/rate limit terlampaui (429). Coba lagi beberapa saat.';
+  }
+  if (status === 404) {
+    return `Google Gemini: model/endpoint tidak ditemukan (404). Periksa nama model & Base URL.`;
+  }
+  return `Google Gemini (${status}): ${(apiMsg || text).slice(0, 160)}`;
+}
+
 // ---------- Adapter: Google Gemini (generativelanguage.googleapis.com) ----------
 
 const GEMINI_DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-// Fallback model image-generation Gemini bila discovery API gagal/offline.
+// Fallback model Gemini bila discovery API gagal/offline. Sumber utama daftar
+// model adalah model discovery dari API Gemini — daftar ini hanya cadangan.
 // Model lama (gemini-2.0-flash-*-image-generation, gemini-2.5-flash-image-preview)
 // sudah pensiun (404) dan TIDAK lagi didaftarkan di sini.
-// Model aktif (2026): gemini-2.5-flash-image (Nano Banana, stable),
-// gemini-3.1-flash-image-preview (Nano Banana 2), gemini-3-pro-image-preview.
-// Sumber utama daftar model adalah model discovery dari API Gemini.
 const GEMINI_MODELS = [
-  'gemini-2.5-flash-image',
-  'gemini-3.1-flash-image-preview',
-  'gemini-3-pro-image-preview',
-];
+  {
+    name: 'models/gemini-2.5-flash-image',
+    displayName: 'Gemini 2.5 Flash Image',
+    description: 'Nano Banana — image generation & editing (text/image in, image out)',
+    supportedGenerationMethods: ['generateContent'],
+  },
+  {
+    name: 'models/gemini-3.1-flash-image-preview',
+    displayName: 'Gemini 3.1 Flash Image (Preview)',
+    description: 'Nano Banana 2 — image generation & editing (text/image in, image out)',
+    supportedGenerationMethods: ['generateContent'],
+  },
+  {
+    name: 'models/gemini-3-pro-image-preview',
+    displayName: 'Gemini 3 Pro Image (Preview)',
+    description: 'Image generation & editing (text/image in, image out)',
+    supportedGenerationMethods: ['generateContent'],
+  },
+  {
+    name: 'models/gemini-2.5-flash',
+    displayName: 'Gemini 2.5 Flash',
+    description: 'Multimodal text & image input, text output',
+    supportedGenerationMethods: ['generateContent'],
+  },
+].map(detectGeminiCapabilities).filter(Boolean);
+
+async function geminiListModels({ apiKey, baseUrl }) {
+  const base = normalizeBase(baseUrl, config.geminiBaseUrl);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
+    const text = await r.text().catch(() => '');
+    if (!r.ok) return { ok: false, models: [], message: friendlyGeminiError(r.status, text) };
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+    // Ambil SEMUA model yang bisa dipanggil lewat generateContent (bukti dari API),
+    // lalu deteksi capability tiap model. Tidak mem-filter berdasarkan nama saja.
+    const models = (data?.models || [])
+      .map(detectGeminiCapabilities)
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { ok: true, models, summary: summarizeModels(models) };
+  } catch (err) {
+    return { ok: false, models: [], message: `Gagal ambil daftar model Gemini: ${err?.message || 'kesalahan tak dikenal'}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Probe ringan: pastikan model benar-benar menghasilkan gambar (bukti keras).
+async function geminiProbeImage({ apiKey, baseUrl, model }) {
+  const base = normalizeBase(baseUrl, config.geminiBaseUrl);
+  const endpoint = `${base}/models/${encodeURIComponent(model)}:generateContent`;
+  const body = {
+    contents: [{ parts: [{ text: 'Create a tiny solid color test image.' }] }],
+    generationConfig: { responseModalities: ['IMAGE'] },
+  };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await pFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const text = await res.text().catch(() => '');
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+    if (!res.ok) {
+      providerLog({ provider: 'gemini', model, baseUrl: base, endpoint, method: 'POST', status: res.status, ms: 0, error: friendlyGeminiError(res.status, text) });
+      throw new Error(friendlyGeminiError(res.status, text));
+    }
+    const partsOut = data?.candidates?.[0]?.content?.parts || [];
+    const hasImage = partsOut.some((p) => p.inlineData?.data || p.inline_data?.data);
+    if (!hasImage) throw new Error('Model tidak mengembalikan gambar pada probe uji.');
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
@@ -388,7 +572,7 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
         try {
           const d = await geminiListModels({ apiKey, baseUrl });
           if (d.ok && d.models.length) {
-            hint = ` Model yang tersedia: ${d.models.slice(0, 8).join(', ')}.`;
+            hint = ` Model yang tersedia: ${d.models.slice(0, 8).map((m) => m.name).join(', ')}.`;
           }
         } catch {
           /* log discovery gagal, lanjut dengan pesan umum */
@@ -426,24 +610,65 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
   }
 }
 
-async function testGemini({ apiKey, baseUrl }) {
+// Test koneksi bertahap: koneksi -> key valid -> model discovery -> image tersedia
+// -> (bila ada model terpilih) probe image generation. Hasil `steps` untuk UI.
+async function testGemini({ apiKey, baseUrl, model }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
+  const steps = [];
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
-    const r = await fetch(`${base}/models`, {
-      headers: { 'x-goog-api-key': apiKey },
-      signal: ctrl.signal,
-    });
+    const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
     const text = await r.text().catch(() => '');
-    if (r.ok) return { ok: true, url: base, status: r.status, message: `Koneksi OK ke Google Gemini (${base}).` };
-    if (r.status === 401 || r.status === 403) {
-      return { ok: false, url: base, status: r.status, message: `Google Gemini API Key tidak valid (${r.status}). Pastikan key benar & masih aktif.` };
+    if (!r.ok) {
+      const msg = friendlyGeminiError(r.status, text);
+      steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: msg });
+      return { ok: false, url: base, status: r.status, steps, message: msg };
     }
-    return { ok: false, url: base, status: r.status, message: `Google Gemini merespons (${r.status}): ${text.slice(0, 160)}` };
+    steps.push({ label: 'Koneksi ke Google Gemini API', ok: true, detail: 'API dapat diakses.' });
+    steps.push({ label: 'API Key valid', ok: true, detail: 'Key diterima oleh Google Gemini.' });
+
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+    const models = (data?.models || []).map(detectGeminiCapabilities).filter(Boolean);
+    steps.push({ label: 'Daftar model dimuat', ok: true, detail: `${models.length} model tersedia.` });
+
+    const imageModels = models.filter((m) => m.supportsImageOutput);
+    if (imageModels.length) {
+      const preview = imageModels.slice(0, 3).map((m) => m.name).join(', ') + (imageModels.length > 3 ? '…' : '');
+      steps.push({ label: 'Image generation tersedia', ok: true, detail: `${imageModels.length} model mendukung image generation (${preview}).` });
+    } else {
+      steps.push({ label: 'Image generation tersedia', ok: false, detail: 'Tidak ada model image generation yang terdeteksi pada key ini.' });
+    }
+
+    if (model) {
+      const sel = models.find((m) => m.name === model);
+      if (sel && sel.supportsImageOutput) {
+        try {
+          await geminiProbeImage({ apiKey, baseUrl, model });
+          steps.push({ label: `Probe model "${model}"`, ok: true, detail: 'Model berhasil menghasilkan gambar uji.' });
+        } catch (e) {
+          steps.push({ label: `Probe model "${model}"`, ok: false, detail: e.message });
+        }
+      } else if (sel) {
+        steps.push({ label: `Probe model "${model}"`, ok: false, detail: 'Model terpilih tidak mendukung image generation.' });
+      }
+    }
+
+    const failed = steps.filter((s) => !s.ok);
+    const ok = failed.length === 0;
+    return {
+      ok,
+      url: base,
+      status: 200,
+      steps,
+      message: ok
+        ? 'Google Gemini API terhubung — semua langkah berhasil.'
+        : `Google Gemini API terhubung, tapi ${failed.length} langkah gagal: ${failed[0].detail}`,
+    };
   } catch (err) {
-    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'kesalahan tak dikenal';
-    return { ok: false, url: base, message: `Gagal terhubung ke ${base}: ${cause}. Cek Base URL & koneksi internet.` };
+    steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: err?.message || 'kesalahan tak dikenal' });
+    return { ok: false, url: base, steps, message: `Gagal terhubung ke ${base}: ${err?.message || 'kesalahan tak dikenal'}` };
   } finally {
     clearTimeout(timer);
   }
@@ -460,10 +685,14 @@ const registry = {
     supportsImg2img: false,
     defaultBaseUrl: 'https://image.pollinations.ai',
     defaultModel: config.pollinationsModel,
-    models: ['flux', 'turbo'],
+    models: ['flux', 'turbo'].map((id) => modelEntry(id, id, { supportsImageOutput: true, supportsText: true })),
     generate: pollinations,
     test: testPollinations,
-    listModels: async () => ({ ok: true, models: ['flux', 'turbo'] }),
+    listModels: async () => ({
+      ok: true,
+      models: ['flux', 'turbo'].map((id) => modelEntry(id, id, { supportsImageOutput: true, supportsText: true })),
+      summary: summarizeModels(['flux', 'turbo'].map((id) => modelEntry(id, id, { supportsImageOutput: true, supportsText: true }))),
+    }),
   },
   openai: {
     id: 'openai',
@@ -473,7 +702,9 @@ const registry = {
     supportsImg2img: true,
     defaultBaseUrl: config.openaiBaseUrl,
     defaultModel: config.openaiModel,
-    models: ['gpt-image-1', 'dall-e-3'],
+    models: ['gpt-image-1', 'dall-e-3'].map((id) =>
+      modelEntry(id, id, { supportsImageOutput: true, supportsImageInput: id !== 'dall-e-3', supportsImageEditing: id !== 'dall-e-3' })
+    ),
     generate: openaiCompat,
     test: testOpenAI,
     listModels: openaiListModels,
@@ -481,7 +712,7 @@ const registry = {
   gemini: {
     id: 'gemini',
     name: 'Google Gemini',
-    description: 'Google AI Studio (generativelanguage.googleapis.com). Autentikasi via x-goog-api-key.',
+    description: 'Google AI Studio (generativelanguage.googleapis.com). Autentikasi via x-goog-api-key. Satu API key untuk banyak model Gemini.',
     requiresApiKey: true,
     supportsImg2img: true,
     defaultBaseUrl: config.geminiBaseUrl,
@@ -511,6 +742,21 @@ function listProviders() {
   }));
 }
 
+// Pilih model yang sesuai untuk fitur tertentu (model routing berbasis capability).
+// Gemini: fitur img2img pakai default image-editing (bisa fallback ke image gen);
+// fitur txt2img pakai default image-generation. Fitur teks pakai default text.
+// Provider lain tetap memakai satu model yang dipilih user.
+function resolveModelForProvider(p, feature, user) {
+  if (p.id === 'gemini') {
+    if (feature.type === 'img2img') {
+      return user.provider_model_editing || user.provider_model_image || user.provider_model || '';
+    }
+    // txt2img / fitur berbasis teks
+    return user.provider_model_image || user.provider_model || user.provider_model_text || '';
+  }
+  return user.provider_model || p.defaultModel || '';
+}
+
 // Pilih adapter yang benar untuk provider terpilih + konfigurasi user.
 // Mengembalikan { name, apiKey, baseUrl, model, generate, test } atau { name: 'unavailable' }.
 function resolveProvider(feature, user) {
@@ -533,9 +779,7 @@ function resolveProvider(feature, user) {
         generate: p.generate,
         apiKey: userKey,
         baseUrl: user.provider_base_url || p.defaultBaseUrl,
-        // Model user apa adanya (dari DB). Bila kosong, biarkan kosong —
-        // geminiGenerate akan memberi pesan jelas, jangan fallback statis.
-        model: user.provider_model || '',
+        model: resolveModelForProvider(p, feature, user),
       };
     }
   }
@@ -572,6 +816,7 @@ module.exports = {
   listProviders,
   listProviderModels,
   resolveProvider,
+  resolveModelForProvider,
   validateConfig,
   ratioSize,
   normalizeBase,
@@ -579,7 +824,11 @@ module.exports = {
   openaiCompat,
   geminiGenerate,
   geminiListModels,
+  geminiProbeImage,
   openaiListModels,
+  detectGeminiCapabilities,
+  summarizeModels,
+  modelEntry,
   providerLog,
   testOpenAI,
   testGemini,

@@ -66,10 +66,72 @@ app.get('/api/providers', (_req, res) => {
   res.json({ providers: providers.listProviders() });
 });
 
+// Konversi baris ai_models -> bentuk client (camelCase, tanpa data sensitif).
+function modelRowToClient(row) {
+  return {
+    name: row.model_name,
+    displayName: row.display_name || row.model_name,
+    supportsText: !!row.supports_text,
+    supportsImageInput: !!row.supports_image_input,
+    supportsImageOutput: !!row.supports_image_output,
+    supportsImageEditing: !!row.supports_image_editing,
+    supportsMultimodal: !!row.supports_multimodal,
+    available: !!row.is_available,
+  };
+}
+
+// Simpan hasil discovery ke ai_models. Model baru di-upsert; model yang hilang
+// dari hasil terbaru ditandai is_available=0 (TIDAK dihapus — point 10).
+// Key unik (user_id, provider, model_name) mencegah duplikat saat "Muat Model" diulang.
+function syncUserModels(userId, provider, models) {
+  const names = models.map((m) => m.name);
+  const placeholders = names.length ? names.map(() => '?').join(',') : "''";
+  const missing = db.prepare(
+    `UPDATE ai_models SET is_available = 0, updated_at = datetime('now')
+     WHERE user_id = ? AND provider = ? AND model_name NOT IN (${placeholders})`
+  );
+  const upsert = db.prepare(
+    `INSERT INTO ai_models
+       (user_id, provider, model_name, display_name, supports_text, supports_image_input,
+        supports_image_output, supports_image_editing, supports_multimodal, is_available)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(user_id, provider, model_name) DO UPDATE SET
+       display_name = excluded.display_name,
+       supports_text = excluded.supports_text,
+       supports_image_input = excluded.supports_image_input,
+       supports_image_output = excluded.supports_image_output,
+       supports_image_editing = excluded.supports_image_editing,
+       supports_multimodal = excluded.supports_multimodal,
+       is_available = 1,
+       updated_at = datetime('now')`
+  );
+  db.exec('BEGIN');
+  try {
+    missing.run(userId, provider, ...names);
+    for (const m of models) {
+      upsert.run(
+        userId,
+        provider,
+        m.name,
+        m.displayName || m.name,
+        m.supportsText ? 1 : 0,
+        m.supportsImageInput ? 1 : 0,
+        m.supportsImageOutput ? 1 : 0,
+        m.supportsImageEditing ? 1 : 0,
+        m.supportsMultimodal ? 1 : 0
+      );
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
 // Daftar model per provider — diambil dinamis dari API provider (model discovery)
 // memakai API key user yang tersimpan (didekripsi di server, tidak pernah dikirim keluar).
-// Kunci: model apa pun yang diketik/simpan user tetap dipakai apa adanya; daftar ini
-// hanya untuk memudahkan pemilihan, bukan validasi tunggal.
+// Response berisi objek model { name, displayName, supportsText, supportsImageInput,
+// supportsImageOutput, supportsImageEditing, supportsMultimodal, available } + summary.
 app.post('/api/providers/:id/models', auth.optionalAuth, async (req, res) => {
   const providerId = String(req.params.id || '').trim();
   const p = providers.getProvider(providerId);
@@ -94,11 +156,27 @@ app.post('/api/providers/:id/models', auth.optionalAuth, async (req, res) => {
 
   const baseUrl = String(body.baseUrl || '').trim() || p.defaultBaseUrl;
   const result = await providers.listProviderModels(providerId, { apiKey, baseUrl });
+  // Persist hasil discovery per user agar tersedia setelah refresh halaman,
+  // dan model lama yang sudah tidak tersedia ditandai (bukan dihapus).
+  if (result.ok && req.user) {
+    try {
+      syncUserModels(req.user.id, providerId, result.models || []);
+    } catch (e) {
+      console.error('syncUserModels gagal:', e.message);
+    }
+  }
   res.json(result);
 });
 
+// Model hasil discovery yang tersimpan untuk user ini (untuk isi dropdown langsung
+// saat halaman dibuka, tanpa harus tekan "Muat Model" lagi).
+app.get('/api/me/models', auth.requireAuth, (_req, res) => {
+  const rows = db.prepare('SELECT * FROM ai_models WHERE user_id = ? ORDER BY model_name').all(_req.user.id);
+  res.json({ models: rows.map(modelRowToClient) });
+});
+
 app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
-  const { provider, apiKey, baseUrl, model, enabled, useFreeTxt } = req.body || {};
+  const { provider, apiKey, baseUrl, model, modelText, modelImage, modelEditing, enabled, useFreeTxt } = req.body || {};
   const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
   if (apiKey && !ascii(apiKey)) {
     return res.status(400).json({
@@ -120,13 +198,28 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   const current = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const finalKey = apiKey !== undefined ? encKey : current.provider_key;
   const finalBase = baseUrl !== undefined ? String(baseUrl).trim() : current.provider_base_url;
-  const finalModel = model !== undefined ? String(model).trim() : current.provider_model;
   const finalEnabled = flag !== undefined ? flag : current.provider_enabled;
   const finalProvider = providerId || current.provider || '';
 
+  // Model per kategori: text / image generation / image editing.
+  const finalModelText = modelText !== undefined ? String(modelText).trim() : current.provider_model_text;
+  let finalModelImage = modelImage !== undefined ? String(modelImage).trim() : current.provider_model_image;
+  let finalModelEditing = modelEditing !== undefined ? String(modelEditing).trim() : current.provider_model_editing;
+  let finalModel = model !== undefined ? String(model).trim() : current.provider_model;
+  // Backward compat: field `model` lama mengisi default image generation
+  // bila modelImage tidak dikirim dari form.
+  if (model !== undefined && modelImage === undefined) {
+    finalModelImage = finalModel;
+  }
+  // Sinkronkan provider_model (single) ke default image generation supaya
+  // logika lama yang membaca provider_model tetap konsisten.
+  if (modelImage !== undefined) {
+    finalModel = finalModelImage;
+  }
+
   db.prepare(
-    'UPDATE users SET provider = ?, provider_key = ?, provider_base_url = ?, provider_model = ?, provider_enabled = ?, use_free_txt = ? WHERE id = ?'
-  ).run(finalProvider, finalKey, finalBase, finalModel, finalEnabled, useFreeTxtFlag, req.user.id);
+    'UPDATE users SET provider = ?, provider_key = ?, provider_base_url = ?, provider_model = ?, provider_model_text = ?, provider_model_image = ?, provider_model_editing = ?, provider_enabled = ?, use_free_txt = ? WHERE id = ?'
+  ).run(finalProvider, finalKey, finalBase, finalModel, finalModelText, finalModelImage, finalModelEditing, finalEnabled, useFreeTxtFlag, req.user.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   res.json({ user: auth.publicUser(user) });
 });

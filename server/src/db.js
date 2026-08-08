@@ -70,10 +70,31 @@ CREATE TABLE IF NOT EXISTS job_inputs (
   upload_id INTEGER NOT NULL
 );
 
+-- Model AI hasil discovery per user+provider. Satu provider (mis. Google Gemini)
+-- bisa punya banyak model; tiap model punya capability-nya sendiri.
+-- Key unik (user_id, provider, model_name) mencegah duplikat saat "Muat Model" diulang.
+CREATE TABLE IF NOT EXISTS ai_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL,
+  display_name TEXT DEFAULT '',
+  supports_text INTEGER NOT NULL DEFAULT 0,
+  supports_image_input INTEGER NOT NULL DEFAULT 0,
+  supports_image_output INTEGER NOT NULL DEFAULT 0,
+  supports_image_editing INTEGER NOT NULL DEFAULT 0,
+  supports_multimodal INTEGER NOT NULL DEFAULT 0,
+  is_available INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, provider, model_name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_batch ON jobs(batch_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_tx_user ON credit_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_job_inputs_batch ON job_inputs(batch_id);
+CREATE INDEX IF NOT EXISTS idx_ai_models_user ON ai_models(user_id, provider);
 `);
 
 // Migrasi ringan: tambah kolom jika belum ada (DB lama sebelum fitur tema).
@@ -90,6 +111,15 @@ CREATE INDEX IF NOT EXISTS idx_job_inputs_batch ON job_inputs(batch_id);
   }
   if (!userCols.includes('provider_enabled')) {
     db.exec('ALTER TABLE users ADD COLUMN provider_enabled INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!userCols.includes('provider_model_text')) {
+    db.exec("ALTER TABLE users ADD COLUMN provider_model_text TEXT DEFAULT ''");
+  }
+  if (!userCols.includes('provider_model_image')) {
+    db.exec("ALTER TABLE users ADD COLUMN provider_model_image TEXT DEFAULT ''");
+  }
+  if (!userCols.includes('provider_model_editing')) {
+    db.exec("ALTER TABLE users ADD COLUMN provider_model_editing TEXT DEFAULT ''");
   }
 }
 
