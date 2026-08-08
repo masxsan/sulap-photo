@@ -20,8 +20,16 @@ const message = ref('');
 const error = ref('');
 const testing = ref(false);
 const testResult = ref(null);
+const modelOptions = ref([]);
+const modelsLoading = ref(false);
+const modelsMsg = ref('');
 
 const activeProvider = computed(() => providers.value.find((p) => p.id === provider.value) || null);
+
+const modelNotListed = computed(() => {
+  const m = (model.value || '').trim();
+  return m && activeProvider.value?.requiresApiKey && modelOptions.value.length && !modelOptions.value.includes(m);
+});
 
 function applyUser() {
   const u = auth.user;
@@ -34,6 +42,46 @@ function applyUser() {
   apiKey.value = ''; // key tidak pernah dikembalikan ke client
 }
 
+// Gabungkan model statis (registry) + hasil discovery, sisipkan model tersimpan
+// bila belum ada di daftar agar nilai dari DB tidak pernah hilang dari pilihan.
+function mergeModelOptions(dynamic) {
+  const statik = activeProvider.value?.models || [];
+  const seen = new Set();
+  const merged = [];
+  for (const m of [...statik, ...(dynamic || []), model.value]) {
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      merged.push(m);
+    }
+  }
+  modelOptions.value = merged;
+}
+
+async function loadModels() {
+  const p = activeProvider.value;
+  if (!p || !p.requiresApiKey) return;
+  modelsLoading.value = true;
+  modelsMsg.value = '';
+  try {
+    const data = await api.post(`/providers/${p.id}/models`, {
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+    });
+    mergeModelOptions(data.models);
+    if (data.ok && data.models.length) {
+      modelsMsg.value = `${data.models.length} model ditemukan dari ${p.name}.`;
+    } else if (!data.ok) {
+      modelsMsg.value = data.message || 'Model discovery gagal.';
+    } else {
+      modelsMsg.value = 'Model discovery kosong — pakai daftar bawaan.';
+    }
+  } catch (e) {
+    modelsMsg.value = e.message;
+  } finally {
+    modelsLoading.value = false;
+  }
+}
+
 async function onSelectProvider() {
   // Ganti provider -> reset ke default-nya agar tidak salah kirim key ke endpoint lain
   const p = activeProvider.value;
@@ -44,6 +92,9 @@ async function onSelectProvider() {
   }
   error.value = '';
   testResult.value = null;
+  modelOptions.value = p?.models || [];
+  modelsMsg.value = '';
+  loadModels();
 }
 
 onMounted(async () => {
@@ -59,6 +110,7 @@ onMounted(async () => {
     // nilai default provider bila user belum punya (hindari menimpa milik user)
     if (!baseUrl.value) baseUrl.value = activeProvider.value.defaultBaseUrl;
     if (!model.value) model.value = activeProvider.value.defaultModel;
+    mergeModelOptions();
   }
   try {
     const data = await api.get('/wallet/transactions');
@@ -66,6 +118,7 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  loadModels();
 });
 
 async function saveProvider() {
@@ -160,17 +213,37 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
           <div class="grid sm:grid-cols-2 gap-3">
             <div>
               <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Model</label>
-              <input
-                v-if="activeProvider"
-                v-model="model"
-                type="text"
-                list="provider-models"
-                class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
-                :placeholder="activeProvider.defaultModel"
-              />
+              <div class="flex gap-2">
+                <input
+                  v-if="activeProvider"
+                  v-model="model"
+                  type="text"
+                  list="provider-models"
+                  class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
+                  :placeholder="activeProvider.defaultModel"
+                />
+                <button
+                  type="button"
+                  @click="loadModels"
+                  :disabled="modelsLoading || !activeProvider?.requiresApiKey"
+                  title="Muat ulang daftar model dari API provider"
+                  class="shrink-0 px-3 py-2.5 rounded-xl border border-slate-300 text-slate-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-40 inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <span v-if="modelsLoading" class="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
+                  <AppIcon v-else name="refresh" :size="15" />
+                  <span class="text-xs font-semibold hidden sm:inline">Muat Model</span>
+                </button>
+              </div>
               <datalist id="provider-models">
-                <option v-for="m in activeProvider?.models" :key="m" :value="m" />
+                <option v-for="m in modelOptions" :key="m" :value="m" />
               </datalist>
+              <p class="mt-1 text-[11px] text-slate-400">
+                Bisa diketik bebas (model tersimpan di database selalu dipakai apa adanya). Daftar bawah diisi otomatis dari API provider.
+              </p>
+              <p v-if="modelsMsg" class="mt-0.5 text-[11px] text-brand-500">{{ modelsMsg }}</p>
+              <p v-if="modelNotListed" class="mt-0.5 text-[11px] text-amber-600">
+                Model tersimpan tidak terdeteksi di daftar provider — kemungkinan sudah tidak tersedia. Pilih model dari daftar di atas, atau tekan "Muat Model" untuk memuat ulang.
+              </p>
             </div>
             <div>
               <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Base URL / API Endpoint</label>

@@ -86,6 +86,83 @@ function normalizeBase(url, fallback = '') {
   return /^https?:\/\//i.test(s) ? s : `https://${s}`;
 }
 
+// Log aman untuk request AI. TIDAK PERNAH mencatat API key / token.
+// Mencatat: provider, model, endpoint, metode, status, durasi, dan pesan error.
+function providerLog({ provider, model, baseUrl, endpoint, method, status, ms, error }) {
+  const parts = [
+    `[ai]`,
+    `provider=${provider || '-'}`,
+    `model=${model || '-'}`,
+    `endpoint=${endpoint || '-'}`,
+    method ? `method=${method}` : null,
+    status ? `status=${status}` : null,
+    ms ? `${ms}ms` : null,
+    error ? `error=${String(error).replace(/\n/g, ' ').slice(0, 300)}` : null,
+  ].filter(Boolean);
+  console.log(parts.join(' '));
+}
+
+// Ambil daftar model dari API provider. Tiap provider punya caranya sendiri.
+// Tidak pernah menampilkan/menyimpan API key ke log.
+
+async function geminiListModels({ apiKey, baseUrl }) {
+  const base = normalizeBase(baseUrl, config.geminiBaseUrl);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
+    const text = await r.text().catch(() => '');
+    if (!r.ok) return { ok: false, models: [], message: `Google Gemini (${r.status}): ${text.slice(0, 160)}` };
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+    // Filter model image-generation: nama mengandung 'image'/'imagen' dan mendukung generateContent
+    const models = (data?.models || [])
+      .filter((m) => {
+        const name = String(m.name || '');
+        const methods = m.supportedGenerationMethods || [];
+        const imageish = /image|imagen/i.test(name);
+        const canGen = methods.includes('generateContent') || methods.includes('GenerateContent');
+        return imageish && canGen;
+      })
+      .map((m) => String(m.name).replace(/^models\//, ''))
+      .sort();
+    return { ok: true, models };
+  } catch (err) {
+    return { ok: false, models: [], message: `Gagal ambil daftar model Gemini: ${err?.message || 'kesalahan tak dikenal'}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function openaiListModels({ apiKey, baseUrl }) {
+  const base = normalizeBase(baseUrl, config.openaiBaseUrl);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: ctrl.signal });
+    const text = await r.text().catch(() => '');
+    if (!r.ok) return { ok: false, models: [], message: `OpenAI (${r.status}): ${text.slice(0, 160)}` };
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* bukan JSON */ }
+    const ids = (data?.data || []).map((m) => m.id).filter(Boolean);
+    // Prioritaskan model pembuat gambar; bila tak ada, tampilkan semua (untuk API OpenAI-compatible).
+    const imageish = ids.filter((id) => /gpt-image|dall-e|image/i.test(id));
+    return { ok: true, models: imageish.length ? imageish : ids.slice(0, 50) };
+  } catch (err) {
+    return { ok: false, models: [], message: `Gagal ambil daftar model OpenAI: ${err?.message || 'kesalahan tak dikenal'}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Wrapper: panggil method listModels milik provider, fallback ke daftar statis.
+async function listProviderModels(providerId, opts) {
+  const p = getProvider(providerId);
+  if (!p) return { ok: false, models: [], message: `Provider "${providerId}" tidak dikenal.` };
+  if (typeof p.listModels === 'function') return p.listModels(opts);
+  return { ok: true, models: p.models || [] };
+}
+
 // ---------- Adapter: Pollinations (gratis, txt2img) ----------
 
 async function pollinations({ prompt, ratio, model }) {
@@ -94,6 +171,7 @@ async function pollinations({ prompt, ratio, model }) {
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
     prompt
   )}?width=${w}&height=${h}&nologo=true&model=${m}`;
+  const started = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 120000);
   try {
@@ -101,8 +179,10 @@ async function pollinations({ prompt, ratio, model }) {
       signal: ctrl.signal,
       headers: { accept: 'image/*' },
     });
+    providerLog({ provider: 'pollinations', model: m, baseUrl: url, endpoint: url, method: 'GET', status: res.status, ms: Date.now() - started });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      providerLog({ provider: 'pollinations', model: m, endpoint: url, method: 'GET', status: res.status, error: text.slice(0, 200) });
       throw new Error(`Pollinations gagal (${res.status}): ${text.slice(0, 200)}`);
     }
     const buf = Buffer.from(await res.arrayBuffer());
@@ -123,6 +203,9 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
   const base = normalizeBase(baseUrl, config.openaiBaseUrl);
   const m = model || config.openaiModel;
   const size = ratioSize(ratio, { forOpenAI: true });
+  const path = feature.type === 'img2img' ? '/images/edits' : '/images/generations';
+  const endpoint = `${base}${path}`;
+  const started = Date.now();
   const headers = {
     Authorization: `Bearer ${apiKey}`,
   };
@@ -145,9 +228,10 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
         return f;
       };
       const res = await fetchRetry(
-        (withFormat) => pFetch(`${base}/images/edits`, { method: 'POST', headers, body: form(withFormat), signal: ctrl.signal }),
+        (withFormat) => pFetch(endpoint, { method: 'POST', headers, body: form(withFormat), signal: ctrl.signal }),
         ctrl
       );
+      providerLog({ provider: 'openai', model: m, baseUrl: base, endpoint, method: 'POST', status: res.status, ms: Date.now() - started });
       data = await res.json();
     } else {
       // /images/generations (json)
@@ -161,7 +245,7 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
         });
       const res = await fetchRetry(
         (withFormat) =>
-          pFetch(`${base}/images/generations`, {
+          pFetch(endpoint, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: body(withFormat),
@@ -169,6 +253,7 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
           }),
         ctrl
       );
+      providerLog({ provider: 'openai', model: m, baseUrl: base, endpoint, method: 'POST', status: res.status, ms: Date.now() - started });
       data = await res.json();
     }
 
@@ -181,6 +266,9 @@ async function openaiCompat({ feature, prompt, images, ratio, model, apiKey, bas
       return Buffer.from(await r.arrayBuffer());
     }
     throw new Error('Format hasil provider tidak dikenali');
+  } catch (err) {
+    providerLog({ provider: 'openai', model: m, baseUrl: base, endpoint, method: 'POST', ms: Date.now() - started, error: err.message });
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -215,15 +303,25 @@ async function testOpenAI({ apiKey, baseUrl }) {
 // ---------- Adapter: Google Gemini (generativelanguage.googleapis.com) ----------
 
 const GEMINI_DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// Daftar model image-generation Gemini. Perbarui mengikuti rilis resmi.
+// `gemini-2.0-flash-exp-image-generation` sudah pensiun (404) — dipertahankan
+// agar user dengan model lama masih dapat melihat/menggantinya lewat discovery.
+// Model aktif (2026): gemini-2.5-flash-image (Nano Banana, stable),
+// gemini-3.1-flash-image-preview (Nano Banana 2), gemini-3-pro-image-preview.
 const GEMINI_MODELS = [
+  'gemini-2.5-flash-image',
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-image-preview',
   'gemini-2.0-flash-exp-image-generation',
   'gemini-2.0-flash-preview-image-generation',
-  'gemini-2.5-flash-image-preview',
 ];
 
 async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, baseUrl }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
   const m = model || config.geminiModel || GEMINI_MODELS[0];
+  const endpoint = `${base}/models/${encodeURIComponent(m)}:generateContent`;
+  const started = Date.now();
 
   const parts = [];
   for (const img of images || []) {
@@ -249,7 +347,7 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 180000);
   try {
-    const res = await pFetch(`${base}/models/${encodeURIComponent(m)}:generateContent`, {
+    const res = await pFetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -268,20 +366,51 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
 
     if (!res.ok) {
       const apiMsg = data?.error?.message || text.slice(0, 200);
+      providerLog({
+        provider: 'gemini',
+        model: m,
+        baseUrl: base,
+        endpoint,
+        method: 'POST',
+        status: res.status,
+        ms: Date.now() - started,
+        error: apiMsg,
+      });
       if (res.status === 401 || res.status === 403) {
         throw new Error(`Google Gemini API Key tidak valid (${res.status}). Pastikan key benar & masih aktif.`);
       }
       if (res.status === 404) {
-        throw new Error(`Model tidak tersedia untuk Google Gemini: ${m}. Pilih model lain.`);
+        // Model tidak ada / pensiun — bantu user memilih model yang tersedia.
+        let hint = '';
+        try {
+          const d = await geminiListModels({ apiKey, baseUrl });
+          if (d.ok && d.models.length) {
+            hint = ` Model yang tersedia: ${d.models.slice(0, 8).join(', ')}.`;
+          }
+        } catch {
+          /* log discovery gagal, lanjut dengan pesan umum */
+        }
+        throw new Error(`Model tidak tersedia untuk Google Gemini: ${m}.${hint} Pilih model dari daftar di Pengaturan → AI Providers.`);
       }
       throw new Error(`Google Gemini error (${res.status}): ${apiMsg}`);
     }
 
+    providerLog({
+      provider: 'gemini',
+      model: m,
+      baseUrl: base,
+      endpoint,
+      method: 'POST',
+      status: res.status,
+      ms: Date.now() - started,
+    });
+
     const candidate = data?.candidates?.[0];
     const partsOut = candidate?.content?.parts || [];
-    const imgPart = partsOut.find((p) => p.inlineData?.data);
-    if (imgPart?.inlineData?.data) {
-      return Buffer.from(imgPart.inlineData.data, 'base64');
+    const imgPart = partsOut.find((p) => p.inlineData?.data || p.inline_data?.data);
+    const raw = imgPart?.inlineData?.data || imgPart?.inline_data?.data;
+    if (raw) {
+      return Buffer.from(raw, 'base64');
     }
     // Gemini bisa menolak permintaan gambar di beberapa model
     const finish = candidate?.finishReason || '';
@@ -331,6 +460,7 @@ const registry = {
     models: ['flux', 'turbo'],
     generate: pollinations,
     test: testPollinations,
+    listModels: async () => ({ ok: true, models: ['flux', 'turbo'] }),
   },
   openai: {
     id: 'openai',
@@ -343,6 +473,7 @@ const registry = {
     models: ['gpt-image-1', 'dall-e-3'],
     generate: openaiCompat,
     test: testOpenAI,
+    listModels: openaiListModels,
   },
   gemini: {
     id: 'gemini',
@@ -355,6 +486,7 @@ const registry = {
     models: GEMINI_MODELS,
     generate: geminiGenerate,
     test: testGemini,
+    listModels: geminiListModels,
   },
 };
 
@@ -432,6 +564,7 @@ module.exports = {
   registry,
   getProvider,
   listProviders,
+  listProviderModels,
   resolveProvider,
   validateConfig,
   ratioSize,
@@ -439,6 +572,9 @@ module.exports = {
   pollinations,
   openaiCompat,
   geminiGenerate,
+  geminiListModels,
+  openaiListModels,
+  providerLog,
   testOpenAI,
   testGemini,
   testPollinations,

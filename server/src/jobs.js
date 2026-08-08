@@ -66,7 +66,21 @@ async function runJob(job) {
     db.prepare(
       "UPDATE jobs SET status = 'done', result_path = ?, provider = ?, model = ?, updated_at = datetime('now') WHERE id = ?"
     ).run(filePath, provider.name, provider.model || job.model, job.id);
+    providers.providerLog({
+      provider: provider.name,
+      model: provider.model || job.model,
+      endpoint: provider.baseUrl || 'default',
+      status: 'done',
+      error: `job #${job.id} selesai`,
+    });
   } catch (err) {
+    providers.providerLog({
+      provider: provider.name,
+      model: provider.model || job.model,
+      endpoint: provider.baseUrl || 'default',
+      status: 'error',
+      error: `job #${job.id}: ${err.message}`,
+    });
     return fail(job, err.message || 'Gagal memproses');
   }
 }

@@ -66,6 +66,37 @@ app.get('/api/providers', (_req, res) => {
   res.json({ providers: providers.listProviders() });
 });
 
+// Daftar model per provider — diambil dinamis dari API provider (model discovery)
+// memakai API key user yang tersimpan (didekripsi di server, tidak pernah dikirim keluar).
+// Kunci: model apa pun yang diketik/simpan user tetap dipakai apa adanya; daftar ini
+// hanya untuk memudahkan pemilihan, bukan validasi tunggal.
+app.post('/api/providers/:id/models', auth.optionalAuth, async (req, res) => {
+  const providerId = String(req.params.id || '').trim();
+  const p = providers.getProvider(providerId);
+  if (!p) {
+    return res.json({ ok: false, models: [], message: `Provider "${providerId}" tidak dikenal.` });
+  }
+
+  // Key sumber: body (sedang diketik di form) > key user tersimpan > key server.
+  const body = req.body || {};
+  let apiKey = String(body.apiKey || '').trim();
+  if (!apiKey && req.user) {
+    const row = db.prepare('SELECT provider_key FROM users WHERE id = ?').get(req.user.id);
+    apiKey = cryptoKeys.decryptKey(row?.provider_key) || '';
+  }
+  if (!apiKey && p.requiresApiKey && providerId === 'openai') {
+    apiKey = config.openaiApiKey;
+  }
+
+  if (p.requiresApiKey && !apiKey) {
+    return res.json({ ok: false, models: [], message: `API Key ${p.name} belum diisi.` });
+  }
+
+  const baseUrl = String(body.baseUrl || '').trim() || p.defaultBaseUrl;
+  const result = await providers.listProviderModels(providerId, { apiKey, baseUrl });
+  res.json(result);
+});
+
 app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   const { provider, apiKey, baseUrl, model, enabled, useFreeTxt } = req.body || {};
   const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
