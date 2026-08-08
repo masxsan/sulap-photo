@@ -1,14 +1,17 @@
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { api } from '../api';
 import { useAuthStore } from '../stores/auth';
 import NavBar from '../components/NavBar.vue';
 import AppIcon from '../components/AppIcon.vue';
 
 const auth = useAuthStore();
+const providers = ref([]);
+const provider = ref('');
 const apiKey = ref('');
 const baseUrl = ref('');
 const model = ref('');
+const enabled = ref(true);
 const useFreeTxt = ref(false);
 const transactions = ref([]);
 const saving = ref(false);
@@ -18,9 +21,45 @@ const error = ref('');
 const testing = ref(false);
 const testResult = ref(null);
 
+const activeProvider = computed(() => providers.value.find((p) => p.id === provider.value) || null);
+
+function applyUser() {
+  const u = auth.user;
+  if (!u) return;
+  provider.value = u.provider || 'pollinations';
+  enabled.value = u.providerEnabled !== false;
+  baseUrl.value = u.providerBaseUrl || '';
+  model.value = u.providerModel || '';
+  useFreeTxt.value = !!u.useFreeTxt;
+  apiKey.value = ''; // key tidak pernah dikembalikan ke client
+}
+
+async function onSelectProvider() {
+  // Ganti provider -> reset ke default-nya agar tidak salah kirim key ke endpoint lain
+  const p = activeProvider.value;
+  if (p) {
+    baseUrl.value = p.defaultBaseUrl;
+    model.value = p.defaultModel;
+    apiKey.value = '';
+  }
+  error.value = '';
+  testResult.value = null;
+}
+
 onMounted(async () => {
   await auth.fetchMe();
-  useFreeTxt.value = !!auth.user?.useFreeTxt;
+  try {
+    const data = await api.get('/providers');
+    providers.value = data.providers;
+  } catch {
+    providers.value = [];
+  }
+  applyUser();
+  if (activeProvider.value) {
+    // nilai default provider bila user belum punya (hindari menimpa milik user)
+    if (!baseUrl.value) baseUrl.value = activeProvider.value.defaultBaseUrl;
+    if (!model.value) model.value = activeProvider.value.defaultModel;
+  }
   try {
     const data = await api.get('/wallet/transactions');
     transactions.value = data.transactions;
@@ -34,11 +73,14 @@ async function saveProvider() {
   saved.value = false;
   error.value = '';
   message.value = '';
+  testResult.value = null;
   try {
     await auth.saveProvider({
-      apiKey: apiKey.value.trim(),
-      baseUrl: baseUrl.value.trim(),
-      model: model.value.trim(),
+      provider: provider.value,
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+      model: model.value,
+      enabled: enabled.value,
       useFreeTxt: useFreeTxt.value,
     });
     saved.value = true;
@@ -55,9 +97,10 @@ async function testProvider() {
   testResult.value = null;
   try {
     testResult.value = await api.post('/me/provider/test', {
-      apiKey: apiKey.value.trim(),
-      baseUrl: baseUrl.value.trim(),
-      model: model.value.trim(),
+      provider: provider.value,
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+      model: model.value,
     });
   } catch (e) {
     testResult.value = { ok: false, message: e.message };
@@ -89,40 +132,81 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
           <span class="w-8 h-8 rounded-lg bg-brand-50 text-brand-500 flex items-center justify-center">
             <AppIcon name="key" :size="17" />
           </span>
-          <h2 class="font-bold text-slate-800">API Key AI (OpenAI-compatible)</h2>
+          <h2 class="font-bold text-slate-800">AI Providers</h2>
         </div>
         <p class="text-sm text-slate-500 mb-4">
-          Opsional. Tanpa API key, aplikasi memakai engine gratis (Pollinations) yang hanya mendukung fitur berbasis teks.
-          Dengan API key, semua fitur (termasuk upload foto) aktif. API key tersimpan hanya di akun Anda.
+          Pilih provider, lalu isi API key-nya. Setiap provider memakai endpoint, autentikasi, dan format request/response miliknya sendiri — API key tidak akan pernah dikirim ke endpoint provider lain.
         </p>
 
         <div class="space-y-3">
           <div>
-            <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">API Key</label>
-            <input v-model="apiKey" type="password" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" placeholder="sk-..." />
+            <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Nama Provider</label>
+            <select
+              v-model="provider"
+              @change="onSelectProvider"
+              class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
+            >
+              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+            <p v-if="activeProvider" class="mt-1.5 text-xs text-slate-400">{{ activeProvider.description }}</p>
           </div>
+
+          <div v-if="activeProvider && activeProvider.requiresApiKey">
+            <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">API Key</label>
+            <input v-model="apiKey" type="password" autocomplete="off" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" :placeholder="apiKey ? 'Tersimpan (ketik untuk mengganti)' : `sk-... / AIza...`" />
+            <p class="mt-1 text-[11px] text-slate-400">Key disimpan terenkripsi di server dan tidak pernah dikembalikan ke browser.</p>
+          </div>
+
           <div class="grid sm:grid-cols-2 gap-3">
             <div>
-              <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Base URL (opsional)</label>
-              <input v-model="baseUrl" type="text" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" placeholder="https://api.openai.com/v1" />
+              <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Model</label>
+              <input
+                v-if="activeProvider"
+                v-model="model"
+                type="text"
+                list="provider-models"
+                class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400"
+                :placeholder="activeProvider.defaultModel"
+              />
+              <datalist id="provider-models">
+                <option v-for="m in activeProvider?.models" :key="m" :value="m" />
+              </datalist>
             </div>
             <div>
-              <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Model (opsional)</label>
-              <input v-model="model" type="text" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" placeholder="gpt-image-1" />
+              <label class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-1.5">Base URL / API Endpoint</label>
+              <input v-model="baseUrl" type="text" class="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400/40 focus:border-brand-400" :placeholder="activeProvider?.defaultBaseUrl" />
             </div>
           </div>
+
+          <label class="flex items-center justify-between gap-3 cursor-pointer select-none rounded-xl border border-slate-200 px-3.5 py-2.5">
+            <span class="text-sm text-slate-600">
+              <b class="text-slate-800">Status: {{ enabled ? 'Aktif' : 'Nonaktif' }}</b>
+              <span class="block text-xs text-slate-400">Nonaktif = provider ini tidak dipakai untuk generate.</span>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="enabled"
+              @click="enabled = !enabled"
+              class="relative w-11 h-6 rounded-full transition-colors shrink-0"
+              :class="enabled ? 'bg-brand-500' : 'bg-slate-300'"
+            >
+              <span class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform" :class="enabled ? 'translate-x-5' : ''"></span>
+            </button>
+          </label>
+
           <label class="flex items-start gap-2.5 mt-1 cursor-pointer select-none">
             <input v-model="useFreeTxt" type="checkbox" class="mt-0.5 w-4 h-4 rounded accent-brand-500" />
             <span class="text-sm text-slate-600">
               <b class="text-slate-800">Gunakan Pollinations gratis untuk fitur teks</b>
               <span class="block text-xs text-slate-400">
-                Text ke Gambar, Poster, Banner &amp; Logo jalan tanpa biaya (tanpa API key). Fitur foto (ubah background, dll.) tetap butuh API key.
+                Text ke Gambar, Poster, Banner &amp; Logo jalan tanpa biaya (tanpa API key). Fitur foto (ubah background, dll.) tetap butuh provider aktif.
               </span>
             </span>
           </label>
           <p v-if="message" class="text-sm text-emerald-600">{{ message }}</p>
           <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
-          <div v-if="testResult" class="text-sm rounded-lg px-3 py-2 border" :class="testResult.ok ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-red-700 bg-red-50 border-red-200'">
+          <div v-if="testResult" class="text-sm rounded-lg px-3 py-2 border break-words" :class="testResult.ok ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-red-700 bg-red-50 border-red-200'">
             <span class="font-bold">{{ testResult.ok ? 'Terhubung' : 'Gagal' }}</span> — {{ testResult.message }}
           </div>
           <div class="flex items-center gap-2">
@@ -141,7 +225,7 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
             >
               <span v-if="testing" class="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
               <AppIcon v-else name="zap" :size="15" />
-              Tes Koneksi
+              Test Connection
             </button>
           </div>
         </div>

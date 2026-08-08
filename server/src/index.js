@@ -12,6 +12,7 @@ const jobs = require('./jobs');
 const features = require('./features');
 const themes = require('./themes');
 const providers = require('./providers');
+const cryptoKeys = require('./crypto');
 
 const app = express();
 app.use(cors());
@@ -60,8 +61,13 @@ app.get('/api/me', auth.requireAuth, (req, res) => {
   res.json({ user: auth.publicUser(user) });
 });
 
+// Daftar provider yang didukung (untuk UI Pengaturan). Tanpa secret apa pun.
+app.get('/api/providers', (_req, res) => {
+  res.json({ providers: providers.listProviders() });
+});
+
 app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
-  const { apiKey, baseUrl, model } = req.body || {};
+  const { provider, apiKey, baseUrl, model, enabled, useFreeTxt } = req.body || {};
   const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
   if (apiKey && !ascii(apiKey)) {
     return res.status(400).json({
@@ -71,66 +77,55 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
   if (baseUrl && !ascii(baseUrl)) {
     return res.status(400).json({ error: 'Base URL mengandung karakter tidak valid. Ketik ulang secara manual.' });
   }
-  const useFreeTxt = req.body.useFreeTxt ? 1 : 0;
-  db.prepare('UPDATE users SET provider_key = ?, provider_base_url = ?, provider_model = ?, use_free_txt = ? WHERE id = ?').run(
-    String(apiKey || '').trim(),
-    String(baseUrl || '').trim(),
-    String(model || '').trim(),
-    useFreeTxt,
-    req.user.id
-  );
+  const providerId = String(provider || '').trim();
+  if (providerId && !providers.getProvider(providerId)) {
+    return res.status(400).json({ error: `Provider "${providerId}" tidak dikenal.` });
+  }
+  // Key disimpan terenkripsi (AES-256-GCM). Base URL/model normal.
+  const encKey = cryptoKeys.encryptKey(String(apiKey || '').trim());
+  const flag = req.body.enabled === undefined ? undefined : req.body.enabled ? 1 : 0;
+  const useFreeTxtFlag = useFreeTxt ? 1 : 0;
+
+  const current = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const finalKey = apiKey !== undefined ? encKey : current.provider_key;
+  const finalBase = baseUrl !== undefined ? String(baseUrl).trim() : current.provider_base_url;
+  const finalModel = model !== undefined ? String(model).trim() : current.provider_model;
+  const finalEnabled = flag !== undefined ? flag : current.provider_enabled;
+  const finalProvider = providerId || current.provider || '';
+
+  db.prepare(
+    'UPDATE users SET provider = ?, provider_key = ?, provider_base_url = ?, provider_model = ?, provider_enabled = ?, use_free_txt = ? WHERE id = ?'
+  ).run(finalProvider, finalKey, finalBase, finalModel, finalEnabled, useFreeTxtFlag, req.user.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   res.json({ user: auth.publicUser(user) });
 });
 
-// Tes koneksi ke provider OpenAI-compatible (diagnosis "fetch failed")
+// Tes koneksi ke provider yang dipilih (menggunakan endpoint & auth milik provider itu).
 app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const body = req.body || {};
+  const providerId = String(body.provider || row?.provider || '').trim() || 'openai';
+  const p = providers.getProvider(providerId);
+  if (!p) {
+    return res.json({ ok: false, message: `Provider "${providerId}" tidak dikenal.` });
+  }
+
   const ascii = (s) => /^[\x20-\x7E]*$/.test(s || '');
-  const apiKey = String(body.apiKey || row?.provider_key || '').trim();
-  const base = providers.normalizeBase(body.baseUrl || row?.provider_base_url, config.openaiBaseUrl);
+  const apiKey = String(body.apiKey || cryptoKeys.decryptKey(row?.provider_key) || '').trim();
   if (apiKey && !ascii(apiKey)) {
-    return res.json({ ok: false, url: base, message: 'API key mengandung karakter non-ASCII (mis. tanda pisah "—"). Hapus dan ketik ulang secara manual.' });
+    return res.json({ ok: false, message: 'API key mengandung karakter non-ASCII (mis. tanda pisah "—"). Hapus dan ketik ulang secara manual.' });
   }
-  if (!apiKey) {
-    return res.json({ ok: false, url: base, message: 'API key belum diisi di Pengaturan.' });
+
+  const baseUrl = String(body.baseUrl || row?.provider_base_url || '').trim() || p.defaultBaseUrl;
+  const model = String(body.model || row?.provider_model || '').trim() || p.defaultModel;
+
+  if (p.requiresApiKey && !apiKey) {
+    return res.json({ ok: false, url: baseUrl, message: `API Key ${p.name} belum diisi.` });
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
-    const r = await fetch(`${base}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: ctrl.signal,
-    });
-    const text = await r.text().catch(() => '');
-    if (r.ok) {
-      return res.json({ ok: true, url: base, status: r.status, message: `Koneksi OK ke ${base}.` });
-    }
-    if (r.status === 401 || r.status === 403) {
-      return res.json({
-        ok: false,
-        url: base,
-        status: r.status,
-        message: `Kunci API ditolak (${r.status}) oleh ${base}. Pastikan key benar & masih aktif.`,
-      });
-    }
-    return res.json({
-      ok: false,
-      url: base,
-      status: r.status,
-      message: `Server ${base} merespons (${r.status}): ${text.slice(0, 160)}`,
-    });
-  } catch (err) {
-    const cause = err?.cause?.code || err?.cause?.message || err?.message || 'kesalahan tak dikenal';
-    return res.json({
-      ok: false,
-      url: base,
-      message: `Gagal terhubung ke ${base}: ${cause}. Cek Base URL & koneksi internet.`,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+
+  // Gunakan adapter test milik provider -> endpoint & auth yang benar.
+  const result = await p.test({ apiKey, baseUrl, model });
+  return res.json(result);
 });
 
 // ================= Kredit / wallet =================

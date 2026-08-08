@@ -16,6 +16,8 @@ const config = {
   openaiBaseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-image-1',
+  geminiBaseUrl: (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, ''),
+  geminiModel: process.env.GEMINI_MODEL || '',
   pollinationsModel: process.env.POLLINATIONS_MODEL || 'flux',
   adminApiKey: process.env.ADMIN_API_KEY || '',
   maxUploadMb: parseInt(process.env.MAX_UPLOAD_MB || '10', 10),

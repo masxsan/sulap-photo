@@ -85,6 +85,12 @@ CREATE INDEX IF NOT EXISTS idx_job_inputs_batch ON job_inputs(batch_id);
   if (!userCols.includes('use_free_txt')) {
     db.exec('ALTER TABLE users ADD COLUMN use_free_txt INTEGER NOT NULL DEFAULT 0');
   }
+  if (!userCols.includes('provider')) {
+    db.exec("ALTER TABLE users ADD COLUMN provider TEXT NOT NULL DEFAULT ''");
+  }
+  if (!userCols.includes('provider_enabled')) {
+    db.exec('ALTER TABLE users ADD COLUMN provider_enabled INTEGER NOT NULL DEFAULT 1');
+  }
 }
 
 module.exports = db;

@@ -33,8 +33,11 @@ function publicUser(row) {
     credits: row.credits,
     themes: Array.isArray(themes) ? themes : [],
     useFreeTxt: !!row.use_free_txt,
+    provider: row.provider || config.defaultProvider,
+    providerEnabled: row.provider_enabled !== 0,
+    providerModel: row.provider_model || '',
+    providerBaseUrl: row.provider_base_url || '',
     providerConfigured: !!(row.provider_key || config.openaiApiKey),
-    provider: row.provider_key ? 'user' : config.defaultProvider,
     createdAt: row.created_at,
   };
 }

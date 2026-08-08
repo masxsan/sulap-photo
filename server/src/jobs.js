@@ -5,13 +5,16 @@ const db = require('./db');
 const config = require('./config');
 const features = require('./features');
 const providers = require('./providers');
+const cryptoKeys = require('./crypto');
 
 // Antrean in-memory (jika server restart, job yang belum selesai ditandai error).
 const queue = [];
 let processing = false;
 
 function loadUser(userId) {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(userId) || null;
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) || null;
+  if (u) u.provider_key = cryptoKeys.decryptKey(u.provider_key);
+  return u;
 }
 
 function addCredit(userId, amount, type, note, jobId) {
@@ -26,26 +29,6 @@ function getCreditBalance(userId) {
   return u ? u.credits : 0;
 }
 
-// Tentukan provider untuk sebuah job berdasarkan fitur + konfigurasi user.
-function resolveProvider(feature, user) {
-  const userKey = user.provider_key || '';
-  const serverKey = config.openaiApiKey;
-
-  if (feature.type === 'img2img') {
-    // img2img butuh API key OpenAI-compatible (Pollinations gratis hanya txt2img)
-    if (userKey) return { name: 'openai', apiKey: userKey, baseUrl: user.provider_base_url || config.openaiBaseUrl, model: user.provider_model || config.openaiModel };
-    if (serverKey) return { name: 'openai', apiKey: serverKey, baseUrl: config.openaiBaseUrl, model: config.openaiModel };
-    return { name: 'unavailable' };
-  }
-
-  // txt2img
-  // Jika user mengaktifkan "pakai gratis untuk fitur teks", selalu pakai Pollinations.
-  if (user.use_free_txt) return { name: 'pollinations' };
-  if (userKey) return { name: 'openai', apiKey: userKey, baseUrl: user.provider_base_url || config.openaiBaseUrl, model: user.provider_model || config.openaiModel };
-  if (serverKey) return { name: 'openai', apiKey: serverKey, baseUrl: config.openaiBaseUrl, model: config.openaiModel };
-  return { name: 'pollinations' };
-}
-
 // Jalankan satu job.
 async function runJob(job) {
   const user = loadUser(job.user_id);
@@ -57,31 +40,23 @@ async function runJob(job) {
     return fail(job, 'Fitur tidak ditemukan');
   }
 
-  const provider = resolveProvider(feature, user);
+  const provider = providers.resolveProvider(feature, user);
   if (provider.name === 'unavailable') {
-    return fail(job, 'Fitur ini butuh API key AI. Tambahkan di Pengaturan (OpenAI-compatible) atau isi OPENAI_API_KEY di server.');
+    return fail(job, 'Fitur ini butuh API key AI. Aktifkan provider (Google Gemini / OpenAI) di Pengaturan atau isi OPENAI_API_KEY di server.');
   }
 
   try {
     let buffer;
-    if (provider.name === 'pollinations') {
-      buffer = await providers.pollinations({
-        prompt: job.prompt,
-        ratio: job.ratio,
-        model: config.pollinationsModel,
-      });
-    } else {
-      const images = loadImages(job);
-      buffer = await providers.openaiCompat({
-        feature,
-        prompt: job.prompt,
-        images,
-        ratio: job.ratio,
-        model: provider.model,
-        apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
-      });
-    }
+    const images = loadImages(job);
+    buffer = await provider.generate({
+      feature,
+      prompt: job.prompt,
+      images,
+      ratio: job.ratio,
+      model: provider.model,
+      apiKey: provider.apiKey,
+      baseUrl: provider.baseUrl,
+    });
 
     const outDir = path.join(config.storageDir, 'results', String(job.user_id));
     fs.mkdirSync(outDir, { recursive: true });
@@ -157,7 +132,7 @@ function createBatch({ userId, featureId, formValues, images, ratio, count }) {
   const batchId = crypto.randomUUID();
   const prompt = features.buildPrompt(feature, formValues);
   const user = loadUser(userId);
-  const provider = resolveProvider(feature, user);
+  const provider = providers.resolveProvider(feature, user);
 
   addCredit(userId, -cost, 'consume', `Generate ${feature.name} (${num}x)`, null);
 
