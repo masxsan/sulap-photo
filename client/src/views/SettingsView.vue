@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { api } from '../api';
 import { useAuthStore } from '../stores/auth';
 import NavBar from '../components/NavBar.vue';
@@ -26,6 +26,57 @@ const testResult = ref(null);
 const modelOptions = ref([]);
 const modelsLoading = ref(false);
 const modelsMsg = ref('');
+// Status API key provider (dashboard Settings): dari GET /api/me/provider/status.
+const providerStatus = ref(null);
+const cooldownLeft = ref(0);
+let cooldownTimer = null;
+
+const statusInfo = computed(() => {
+  const map = {
+    ACTIVE: { emoji: '🟢', color: 'text-emerald-600', label: 'API Key Aktif', detail: 'Koneksi Gemini berhasil.' },
+    RATE_LIMIT: { emoji: '🟡', color: 'text-amber-500', label: 'Rate Limit', detail: 'API sedang terkena batas request. Silakan tunggu beberapa saat.' },
+    QUOTA_EXCEEDED: { emoji: '🔴', color: 'text-red-600', label: 'Quota Terlampaui', detail: 'Quota API Gemini untuk request ini telah mencapai batas.' },
+    INVALID_KEY: { emoji: '🔴', color: 'text-red-600', label: 'API Key Tidak Valid', detail: 'Periksa kembali API Key Google AI Studio.' },
+    MODEL_UNAVAILABLE: { emoji: '🟠', color: 'text-orange-500', label: 'Model Tidak Tersedia', detail: 'Model ini tidak dapat digunakan oleh API/project saat ini.' },
+    TEMPORARY_ERROR: { emoji: '⚠️', color: 'text-amber-500', label: 'Gangguan Sementara', detail: 'Server Gemini sedang mengalami gangguan sementara. Silakan coba lagi nanti.' },
+    UNKNOWN: { emoji: '⚪', color: 'text-slate-400', label: 'Belum Dites', detail: 'Belum ada pengujian untuk API key ini.' },
+  };
+  const key = providerStatus.value?.status || 'UNKNOWN';
+  return map[key] || map.UNKNOWN;
+});
+
+// Format timestamp ISO -> teks relatif "2 menit lalu".
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const diff = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (diff < 60) return `${diff} detik lalu`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} menit lalu`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} jam lalu`;
+  return `${Math.floor(diff / 86400)} hari lalu`;
+}
+
+function startCooldownTimer(seconds) {
+  stopCooldownTimer();
+  cooldownLeft.value = seconds;
+  cooldownTimer = setInterval(() => {
+    cooldownLeft.value = Math.max(0, cooldownLeft.value - 1);
+    if (cooldownLeft.value <= 0) stopCooldownTimer();
+  }, 1000);
+}
+function stopCooldownTimer() {
+  if (cooldownTimer) { clearInterval(cooldownTimer); cooldownTimer = null; }
+}
+
+async function fetchProviderStatus() {
+  try {
+    const d = await api.get('/me/provider/status');
+    providerStatus.value = d;
+    if (d.cooldownSeconds > 0) startCooldownTimer(d.cooldownSeconds);
+    else stopCooldownTimer();
+  } catch { /* ignore */ }
+}
 
 const activeProvider = computed(() => providers.value.find((p) => p.id === provider.value) || null);
 
@@ -67,9 +118,17 @@ function setModelOptions(dynamic) {
   modelOptions.value = base;
 }
 
-async function loadModels() {
+async function loadModels({ force = false } = {}) {
   const p = activeProvider.value;
   if (!p || !p.requiresApiKey) return;
+  // Cache model (point 15): bila masih baru (<10 menit) dan bukan force, pakai cache.
+  if (!force && providerStatus.value?.lastModelsSync) {
+    const ageMs = Date.now() - new Date(providerStatus.value.lastModelsSync).getTime();
+    if (Number.isFinite(ageMs) && ageMs < 10 * 60 * 1000) {
+      modelsMsg.value = '✓ Daftar model masih baru (cache). Tekan "↻ Refresh Models" untuk sinkron ulang.';
+      return;
+    }
+  }
   modelsLoading.value = true;
   modelsMsg.value = '';
   try {
@@ -103,6 +162,7 @@ async function loadModels() {
       setModelOptions();
       modelsMsg.value = '✕ Model discovery kosong — pakai daftar bawaan.';
     }
+    await fetchProviderStatus();
   } catch (e) {
     modelsMsg.value = `✕ ${e.message}`;
   } finally {
@@ -138,6 +198,7 @@ async function onSelectProvider() {
   modelOptions.value = p?.models || [];
   modelsMsg.value = '';
   if (p && p.requiresApiKey) loadModels();
+  fetchProviderStatus();
 }
 
 onMounted(async () => {
@@ -166,8 +227,13 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  await fetchProviderStatus();
+  // Auto-load model hanya bila cache sudah kedaluwarsa (point 15). Cache baru
+  // (<=10 menit) dipakai tanpa request ulang ke Gemini.
   if (activeProvider.value?.requiresApiKey) loadModels();
 });
+
+onBeforeUnmount(() => stopCooldownTimer());
 
 async function saveProvider() {
   saving.value = true;
@@ -201,12 +267,14 @@ async function testProvider() {
   testing.value = true;
   testResult.value = null;
   try {
+    // HANYA request ringan (validasi key + list model). TIDAK mengirim model
+    // supaya jelas tidak ada image generation saat test (point 1/9).
     testResult.value = await api.post('/me/provider/test', {
       provider: provider.value,
       apiKey: apiKey.value,
       baseUrl: baseUrl.value,
-      model: modelImage.value || modelEditing.value || '',
     });
+    await fetchProviderStatus();
   } catch (e) {
     testResult.value = { ok: false, message: e.message };
   } finally {
@@ -313,22 +381,46 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
               <div class="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  @click="loadModels"
+                  @click="loadModels({ force: true })"
                   :disabled="modelsLoading || !activeProvider?.requiresApiKey"
-                  title="Muat ulang daftar model dari API provider"
+                  title="Sinkronisasi manual daftar model dari API provider"
                   class="shrink-0 px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-40 inline-flex items-center gap-1.5 transition-colors"
                 >
                   <span v-if="modelsLoading" class="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
                   <AppIcon v-else name="refresh" :size="15" />
-                  <span class="text-xs font-semibold">Muat Model</span>
+                  <span class="text-xs font-semibold">↻ Refresh Models</span>
                 </button>
                 <p v-if="modelsMsg" class="text-xs" :class="modelsMsg.startsWith('✓') ? 'text-emerald-600' : 'text-red-600'">{{ modelsMsg }}</p>
               </div>
               <p class="mt-2 text-[11px] text-slate-400">
-                Tekan <b>"Muat Model"</b> untuk mengambil daftar model dari API {{ activeProvider?.name }}. Model dikelompokkan otomatis berdasarkan capability-nya dan tersedia di ketiga dropdown di atas.
+                Tekan <b>"↻ Refresh Models"</b> untuk mengambil daftar model dari API {{ activeProvider?.name }}. Daftar model otomatis di-cache dan tidak memakai kuota image generation — hanya request daftar model ringan.
               </p>
               <p v-if="unavailableModels.length" class="mt-1 text-[11px] text-amber-600">
-                Model terpilih sudah tidak tersedia di daftar provider: <b>{{ unavailableModels.join(', ') }}</b>. Pilih model dari daftar di atas, atau tekan "Muat Model" untuk memuat ulang.
+                Model terpilih sudah tidak tersedia di daftar provider: <b>{{ unavailableModels.join(', ') }}</b>. Pilih model dari daftar di atas, atau tekan "Refresh Models" untuk memuat ulang.
+              </p>
+            </div>
+
+            <!-- Dashboard status API key (point 13) -->
+            <div class="rounded-xl border px-3.5 py-3" :class="statusInfo.emoji === '🟢' ? 'border-emerald-200 bg-emerald-50/50' : statusInfo.emoji === '🟡' || statusInfo.emoji === '⚠️' ? 'border-amber-200 bg-amber-50/50' : statusInfo.emoji === '🔴' ? 'border-red-200 bg-red-50/50' : 'border-slate-200 bg-slate-50'">
+              <div class="flex items-center gap-2">
+                <span class="text-base leading-none">{{ statusInfo.emoji }}</span>
+                <b class="text-sm" :class="statusInfo.color">{{ statusInfo.label }}</b>
+              </div>
+              <p class="mt-1 text-xs text-slate-600">{{ statusInfo.detail }}</p>
+              <dl class="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                <div><dt class="uppercase tracking-wide text-slate-400">API Key</dt><dd class="font-mono">{{ providerStatus?.keyMask || '—' }}</dd></div>
+                <div><dt class="uppercase tracking-wide text-slate-400">Terakhir Dites</dt><dd>{{ timeAgo(providerStatus?.lastTestedAt) }}</dd></div>
+                <div><dt class="uppercase tracking-wide text-slate-400">Terakhir Sukses</dt><dd>{{ timeAgo(providerStatus?.lastSuccessAt) }}</dd></div>
+                <div><dt class="uppercase tracking-wide text-slate-400">Error Terakhir</dt><dd>{{ providerStatus?.lastErrorMessage || 'Tidak ada' }}</dd></div>
+                <div><dt class="uppercase tracking-wide text-slate-400">Model</dt><dd>{{ providerStatus?.lastModelsSync ? timeAgo(providerStatus.lastModelsSync) : '—' }}</dd></div>
+                <div>
+                  <dt class="uppercase tracking-wide text-slate-400">Cooldown</dt>
+                  <dd v-if="cooldownLeft > 0" class="text-amber-600 font-semibold tabular-nums">{{ cooldownLeft }} dtk</dd>
+                  <dd v-else>Tidak ada</dd>
+                </div>
+              </dl>
+              <p v-if="cooldownLeft > 0" class="mt-2 text-xs text-amber-700">
+                Gemini sedang terkena rate limit. Coba lagi dalam <b>{{ cooldownLeft }} detik</b>.
               </p>
             </div>
           </div>
@@ -386,9 +478,10 @@ const typeColor = (t) => (t === 'consume' || t === 'theme_purchase' ? 'text-red-
             >
               <span v-if="testing" class="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
               <AppIcon v-else name="zap" :size="15" />
-              Test Connection
+              Test API Key
             </button>
           </div>
+          <p class="mt-2 text-[11px] text-slate-400">Test API Key hanya memvalidasi koneksi, key, dan daftar model — <b>tidak membuat gambar</b> sehingga tidak menghabiskan kuota image generation.</p>
         </div>
       </section>
 

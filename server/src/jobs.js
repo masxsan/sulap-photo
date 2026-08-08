@@ -6,6 +6,7 @@ const config = require('./config');
 const features = require('./features');
 const providers = require('./providers');
 const cryptoKeys = require('./crypto');
+const providerStatus = require('./providerStatus');
 
 // Antrean in-memory (jika server restart, job yang belum selesai ditandai error).
 const queue = [];
@@ -45,6 +46,15 @@ async function runJob(job) {
     return fail(job, 'Fitur ini butuh API key AI. Aktifkan provider (Google Gemini / OpenAI) di Pengaturan atau isi OPENAI_API_KEY di server.');
   }
 
+  // Cooldown 429/5xx: jangan paksa request Gemini saat masih dalam cooldown (point 5).
+  if (provider.name === 'gemini') {
+    const remaining = providerStatus.cooldownRemainingSeconds(user);
+    if (remaining > 0) {
+      providerStatus.clearExpiredCooldown(user);
+      return fail(job, `Gemini sedang terkena rate limit. Coba lagi dalam ${remaining} detik.`);
+    }
+  }
+
   try {
     let buffer;
     const images = loadImages(job);
@@ -73,6 +83,15 @@ async function runJob(job) {
       status: 'done',
       error: `job #${job.id} selesai`,
     });
+    providerStatus.logRequest({
+      userId: job.user_id,
+      provider: provider.name,
+      model: provider.model || job.model,
+      status: 200,
+    });
+    if (provider.name === 'gemini') {
+      providerStatus.setProviderStatus(job.user_id, { status: 'ACTIVE', success: true, cooldownSeconds: 0 });
+    }
   } catch (err) {
     providers.providerLog({
       provider: provider.name,
@@ -81,6 +100,25 @@ async function runJob(job) {
       status: 'error',
       error: `job #${job.id}: ${err.message}`,
     });
+    // Rekam status Gemini (429/5xx -> cooldown; 401/403 -> INVALID_KEY) supaya
+    // tidak dianggap "API key habis" dan cooldown diterapkan (point 2/3/5/12).
+    if (provider.name === 'gemini' && err?.gemini) {
+      providerStatus.setProviderStatus(job.user_id, {
+        status: err.providerStatus || 'TEMPORARY_ERROR',
+        errorCode: err.code || err.providerStatus || '',
+        errorMessage: err.message,
+        cooldownSeconds: err.cooldownSeconds || 0,
+      });
+      providerStatus.logRequest({
+        userId: job.user_id,
+        provider: provider.name,
+        model: provider.model || job.model,
+        status: err.status || 0,
+        errorCode: err.code || err.providerStatus || '',
+        errorMessage: err.message,
+        cooldownSeconds: err.cooldownSeconds || 0,
+      });
+    }
     return fail(job, err.message || 'Gagal memproses');
   }
 }

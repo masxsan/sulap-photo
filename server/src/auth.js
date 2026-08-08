@@ -41,6 +41,14 @@ function publicUser(row) {
     providerModelEditing: row.provider_model_editing || '',
     providerBaseUrl: row.provider_base_url || '',
     providerConfigured: !!(row.provider_key || config.openaiApiKey),
+    // Status/kesehatan API key provider (untuk dashboard Settings).
+    providerStatus: row.provider_status || '',
+    lastTestedAt: row.last_tested_at || '',
+    lastSuccessAt: row.last_success_at || '',
+    lastErrorCode: row.last_error_code || '',
+    lastErrorMessage: row.last_error_message || '',
+    cooldownUntil: row.cooldown_until || '',
+    lastModelsSync: row.last_models_sync || '',
     createdAt: row.created_at,
   };
 }

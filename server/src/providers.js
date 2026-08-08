@@ -369,55 +369,123 @@ function summarizeModels(models) {
   };
 }
 
+// Ekstrak durasi cooldown (detik) dari body Gemini (retryInfo.retryDelay) atau
+// header Retry-After. Default: 429 = 30 detik, 5xx = 10 detik.
+function parseCooldownSeconds(status, text, retryAfterHeader) {
+  if (retryAfterHeader) {
+    const n = parseInt(retryAfterHeader, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  try {
+    const d = JSON.parse(text);
+    const delay = d?.error?.retryInfo?.retryDelay || d?.retryInfo?.retryDelay || d?.error?.details?.[0]?.retryInfo?.retryDelay;
+    if (delay) {
+      // Format: "30s", "1.5s", "2m"
+      const m = String(delay).match(/^(\d+(?:\.\d+)?)\s*(s|m)?$/i);
+      if (m) {
+        const base = parseFloat(m[1]);
+        if (m[2] === 'm') return Math.round(base * 60);
+        return Math.round(base);
+      }
+    }
+  } catch { /* bukan JSON */ }
+  if (status === 429) return 30;
+  return 10;
+}
+
 // Klasifikasi + pesan ramah untuk error Gemini (tanpa informasi sensitif).
-// Mengenali: 400, 401, 403, 404, 429, 500, 503, dan error jaringan.
-// Mengembalikan { status, code, retryable, message }.
-// retryable = layak retry/fallback (429, 500, 503, transient network).
-// 429 != API key invalid — model tetap dipertahankan (point 6).
-function handleGeminiError(status, text, model) {
+// Mengenali: 400, 401, 403, 404, 429, 500, 503, 504, dan error jaringan.
+// Mengembalikan { status(HTTP), code, retryable, message, providerStatus,
+//                 cooldownSeconds }.
+// 429 BUKAN berarti "API key habis" — key bukan barang yang habis. Yang bisa
+// terlampaui adalah quota/limit (point 3/14). Dua kasus dibedakan:
+//   - pesan menyebut "quota"            -> QUOTA_EXCEEDED (cooldown lebih lama)
+//   - rate limit biasa (RPM/TPM)        -> RATE_LIMIT
+function handleGeminiError(status, text, model, retryAfterHeader) {
   let apiMsg = '';
+  let apiCode = '';
   try {
     const d = JSON.parse(text);
     apiMsg = d?.error?.message || '';
+    apiCode = d?.error?.code || d?.error?.details?.[0]?.reason || '';
   } catch { /* bukan JSON */ }
-  const code = (c) => ({ status, code: c, message: '' });
+  let cooldownSeconds = parseCooldownSeconds(status, text, retryAfterHeader);
+  // Cooldown hanya relevan untuk rate limit (429) / gangguan server (5xx).
+  // Key invalid (401/403/400) atau model hilang (404) tidak butuh cooldown.
+  if (status !== 429 && !(status >= 500)) cooldownSeconds = 0;
+  const base = (code, providerStatus, retryable) => ({
+    status,
+    code,
+    providerStatus,
+    retryable,
+    message: '',
+    cooldownSeconds,
+  });
 
   if (status === 400 && /API key not valid|API_KEY_INVALID|API key expired|API key has expired/i.test(apiMsg)) {
-    return { ...code('AUTH'), retryable: false, message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
+    return { ...base('AUTH', 'INVALID_KEY', false), message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
   }
   if (status === 400) {
-    return { ...code('BAD_REQUEST'), retryable: false, message: `Google Gemini menolak request (400): ${(apiMsg || text).slice(0, 160)}` };
+    return { ...base('BAD_REQUEST', 'TEMPORARY_ERROR', false), message: `Google Gemini menolak request (400): ${(apiMsg || text).slice(0, 160)}` };
   }
   if (status === 401 || status === 403) {
-    return { ...code('AUTH'), retryable: false, message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
+    return { ...base('AUTH', 'INVALID_KEY', false), message: `Google Gemini API Key tidak valid (${status}). Pastikan key benar & masih aktif.` };
   }
   if (status === 404) {
-    return { ...code('NOT_FOUND'), retryable: false, message: `Model tidak tersedia untuk Google Gemini${model ? ': ' + model : ''} (404). Periksa nama model & Base URL.` };
+    return { ...base('NOT_FOUND', 'MODEL_UNAVAILABLE', false), message: `Model tidak tersedia untuk Google Gemini${model ? ': ' + model : ''} (404). Model ini tidak dapat digunakan oleh API/project ini. Pilih model lain.` };
   }
   if (status === 429) {
+    const isQuota = /quota/i.test(apiMsg) || apiCode === 'QUOTA_EXCEEDED';
+    const providerStatus = isQuota ? 'QUOTA_EXCEEDED' : 'RATE_LIMIT';
     return {
-      ...code('RATE_LIMITED'),
-      retryable: true,
-      message: `Quota/rate limit exceeded (429). Model${model ? ' ' + model : ''} ditemukan tetapi sementara tidak dapat digunakan. Silakan coba lagi beberapa saat.`,
+      ...base('RATE_LIMITED', providerStatus, true),
+      cooldownSeconds: isQuota ? Math.max(cooldownSeconds, 60) : cooldownSeconds,
+      message: isQuota
+        ? `Quota API Gemini telah mencapai batas (429). Silakan coba lagi nanti (${cooldownSeconds} dtk) atau gunakan provider lain.`
+        : `Terlalu banyak request dalam waktu singkat (429). Silakan tunggu beberapa saat.`,
     };
   }
-  if (status === 500 || status === 503) {
-    return { ...code('SERVER'), retryable: true, message: `Google Gemini sedang sibuk/bermasalah (${status}). Silakan coba lagi beberapa saat.` };
+  if (status === 500 || status === 502 || status === 503 || status === 504) {
+    return { ...base('SERVER', 'TEMPORARY_ERROR', true), message: `Server Gemini sedang mengalami gangguan sementara (${status}). Silakan coba lagi nanti.` };
   }
-  return { ...code('OTHER'), retryable: false, message: `Google Gemini (${status}): ${(apiMsg || text).slice(0, 160)}` };
+  return { ...base('OTHER', 'TEMPORARY_ERROR', false), message: `Google Gemini (${status}): ${(apiMsg || text).slice(0, 160)}` };
 }
 
-// Bungkus error Gemini: attach code/retryable/model agar lapisan atas (jobs.js,
-// frontend) bisa bereaksi — tanpa menyimpan API key di pesan.
-function geminiError(status, text, model) {
-  const h = handleGeminiError(status, text, model);
+// Bungkus error Gemini: attach code/retryable/model/providerStatus/cooldown
+// agar lapisan atas (jobs.js, frontend) bisa bereaksi — tanpa menyimpan API key.
+function geminiError(status, text, model, retryAfterHeader) {
+  const h = handleGeminiError(status, text, model, retryAfterHeader);
   const e = new Error(h.message);
   e.code = h.code;
   e.retryable = h.retryable;
   e.status = h.status;
   e.model = model || null;
+  e.providerStatus = h.providerStatus;
+  e.cooldownSeconds = h.cooldownSeconds;
   e.gemini = true;
   return e;
+}
+
+// Mask API key untuk ditampilkan (AIzaSy************abcd). Hanya untuk UI,
+// TIDAK pernah dicatat penuh di log / response / DB.
+function maskKey(key) {
+  const s = String(key || '');
+  if (s.length <= 8) return s ? '****' : '';
+  return `${s.slice(0, 6)}${'*'.repeat(12)}${s.slice(-4)}`;
+}
+
+// Label + emoji untuk status provider (dipakai dashboard / Settings).
+function statusInfo(providerStatus) {
+  const map = {
+    ACTIVE: { emoji: '🟢', label: 'API Key Aktif', detail: 'Koneksi Gemini berhasil.' },
+    RATE_LIMIT: { emoji: '🟡', label: 'Rate Limit', detail: 'API sedang terkena batas request. Silakan tunggu beberapa saat.' },
+    QUOTA_EXCEEDED: { emoji: '🔴', label: 'Quota Terlampaui', detail: 'Quota API Gemini untuk request ini telah mencapai batas.' },
+    INVALID_KEY: { emoji: '🔴', label: 'API Key Tidak Valid', detail: 'Periksa kembali API Key Google AI Studio.' },
+    MODEL_UNAVAILABLE: { emoji: '🟠', label: 'Model Tidak Tersedia', detail: 'Model ini tidak dapat digunakan oleh API/project saat ini.' },
+    TEMPORARY_ERROR: { emoji: '⚠️', label: 'Gangguan Sementara', detail: 'Server Gemini sedang mengalami gangguan sementara. Silakan coba lagi nanti.' },
+    UNKNOWN: { emoji: '⚪', label: 'Belum Dites', detail: 'Belum ada pengujian untuk API key ini.' },
+  };
+  return map[providerStatus] || map.UNKNOWN;
 }
 
 // ---------- Adapter: Google Gemini (generativelanguage.googleapis.com) ----------
@@ -468,7 +536,7 @@ async function geminiListModels({ apiKey, baseUrl }) {
     if (ctrl.signal.aborted) throw new Error('timeout');
     const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
     const text = await r.text().catch(() => '');
-    if (!r.ok) throw Object.assign(geminiError(r.status, text), { text, statusCode: r.status });
+    if (!r.ok) throw Object.assign(geminiError(r.status, text, '', r.headers.get('retry-after')), { text, statusCode: r.status, retryAfter: r.headers.get('retry-after') });
     let data = null;
     try { data = JSON.parse(text); } catch { /* bukan JSON */ }
     // Ambil SEMUA model yang bisa dipanggil lewat generateContent (bukti dari API),
@@ -477,7 +545,7 @@ async function geminiListModels({ apiKey, baseUrl }) {
       .map(detectGeminiCapabilities)
       .filter(Boolean)
       .sort((a, b) => a.name.localeCompare(b.name));
-    return { ok: true, models, summary: summarizeModels(models), source: 'api' };
+    return { ok: true, models, summary: summarizeModels(models), source: 'api', providerStatus: 'ACTIVE', cooldownSeconds: 0 };
   };
   try {
     try {
@@ -501,17 +569,33 @@ async function geminiListModels({ apiKey, baseUrl }) {
     // kembalikan daftar cadangan statis sebagai fallback + catatan rate-limit,
     // supaya user tetap punya model untuk dipilih (point 3/4/6).
     if (err?.code === 'RATE_LIMITED') {
-      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', rateLimited: true, message: handleGeminiError(429, '', '').message };
+      const h = handleGeminiError(err.statusCode || 429, err.text || '', '', err.retryAfter);
+      return {
+        ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS),
+        source: 'fallback', rateLimited: true,
+        providerStatus: h.providerStatus, cooldownSeconds: h.cooldownSeconds,
+        message: h.message,
+      };
     }
     if (err?.statusCode >= 500 || err?.status === 502) {
-      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', message: `Google Gemini tidak merespons (${err.statusCode || err.status || '5xx'}). Menampilkan daftar model cadangan.` };
+      const h = handleGeminiError(err.statusCode || 503, err.text || '');
+      return {
+        ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS),
+        source: 'fallback', providerStatus: 'TEMPORARY_ERROR', cooldownSeconds: h.cooldownSeconds,
+        message: `Google Gemini tidak merespons (${err.statusCode || err.status || '5xx'}). Menampilkan daftar model cadangan.`,
+      };
     }
     // Kegagalan jaringan (fetch TypeError) saat discovery — fallback juga.
     if (err?.code === 'NETWORK' || err?.cause?.code || err?.message?.startsWith('fetch failed')) {
-      return { ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS), source: 'fallback', message: `Gagal terhubung ke Google Gemini saat memuat model. Menampilkan daftar model cadangan.` };
+      return {
+        ok: true, models: GEMINI_MODELS, summary: summarizeModels(GEMINI_MODELS),
+        source: 'fallback', providerStatus: 'TEMPORARY_ERROR', cooldownSeconds: 10,
+        message: `Gagal terhubung ke Google Gemini saat memuat model. Menampilkan daftar model cadangan.`,
+      };
     }
     if (err?.code === 'AUTH' || err?.code === 'NOT_FOUND') {
-      return { ok: false, models: [], message: handleGeminiError(err.statusCode || err.status, err.text || '').message };
+      const h = handleGeminiError(err.statusCode || err.status, err.text || '');
+      return { ok: false, models: [], providerStatus: h.providerStatus, cooldownSeconds: 0, message: h.message };
     }
     return { ok: false, models: [], message: `Gagal ambil daftar model Gemini: ${err?.message || 'kesalahan tak dikenal'}` };
   } finally {
@@ -686,14 +770,13 @@ async function geminiGenerate({ feature, prompt, images, ratio, model, apiKey, b
   }
 }
 
-// Test koneksi bertahap: koneksi -> key valid -> model discovery -> image tersedia
-// -> (bila ada model terpilih) probe image generation. Hasil `steps` untuk UI.
-// Test TIDAK memanggil probe bila hanya "discovery" — probe hanya dijalankan
-// saat test eksplisit dipicu user (point 7). 429 pada probe bukanlah kegagalan
-// koneksi/key — dilaporkan sebagai langkah info, bukan error fatal.
+// Test koneksi TANPA generate gambar sama sekali (point 1/9): hanya
+// 1) validasi key  2) koneksi  3) daftar model  4) capability model.
+// Hasil `steps` untuk UI. Kembalikan providerStatus + cooldownSeconds agar
+// index.js bisa menyimpannya ke DB. 429/5xx saat discovery diklasifikasikan
+// (RATE_LIMIT / QUOTA_EXCEEDED / TEMPORARY_ERROR) — bukan "API key habis".
 async function testGemini({ apiKey, baseUrl, model }) {
   const base = normalizeBase(baseUrl, config.geminiBaseUrl);
-  const modelName = (model || '').trim().replace(/^models\//, '');
   const steps = [];
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
@@ -701,9 +784,9 @@ async function testGemini({ apiKey, baseUrl, model }) {
     const r = await fetch(`${base}/models`, { headers: { 'x-goog-api-key': apiKey }, signal: ctrl.signal });
     const text = await r.text().catch(() => '');
     if (!r.ok) {
-      const h = handleGeminiError(r.status, text);
+      const h = handleGeminiError(r.status, text, model, r.headers.get('retry-after'));
       steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: h.message });
-      return { ok: false, url: base, status: r.status, steps, message: h.message };
+      return { ok: false, url: base, status: r.status, steps, message: h.message, providerStatus: h.providerStatus, cooldownSeconds: h.cooldownSeconds };
     }
     steps.push({ label: 'Koneksi ke Google Gemini API', ok: true, detail: 'API dapat diakses.' });
     steps.push({ label: 'API Key valid', ok: true, detail: 'Key diterima oleh Google Gemini.' });
@@ -721,27 +804,6 @@ async function testGemini({ apiKey, baseUrl, model }) {
       steps.push({ label: 'Image generation tersedia', ok: false, detail: 'Tidak ada model image generation yang terdeteksi pada key ini.' });
     }
 
-    // Probe image generation HANYA bila user eksplisit meminta test (bukan saat
-    // "Muat Model"/discovery) dan model terpilih mendukung image output.
-    if (modelName) {
-      const sel = models.find((m) => m.name === modelName);
-      if (sel && sel.supportsImageOutput) {
-        try {
-          await geminiProbeImage({ apiKey, baseUrl, model: modelName });
-          steps.push({ label: `Probe model "${modelName}"`, ok: true, detail: 'Model berhasil menghasilkan gambar uji.' });
-        } catch (e) {
-          if (e?.code === 'RATE_LIMITED') {
-            // 429 saat probe: bukan masalah key/koneksi — info, jangan hard-fail.
-            steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: `${e.message} Model tetap terdaftar dan akan diuji lagi nanti.` });
-          } else {
-            steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: e.message });
-          }
-        }
-      } else if (sel) {
-        steps.push({ label: `Probe model "${modelName}"`, ok: false, detail: 'Model terpilih tidak mendukung image generation.' });
-      }
-    }
-
     const failed = steps.filter((s) => !s.ok);
     const ok = failed.length === 0;
     return {
@@ -749,13 +811,23 @@ async function testGemini({ apiKey, baseUrl, model }) {
       url: base,
       status: 200,
       steps,
+      providerStatus: 'ACTIVE',
+      cooldownSeconds: 0,
       message: ok
-        ? 'Google Gemini API terhubung — semua langkah berhasil.'
+        ? 'API Key Aktif — Koneksi Gemini berhasil.'
         : `Google Gemini API terhubung, tapi ${failed.length} langkah gagal: ${failed[0].detail}`,
     };
   } catch (err) {
+    const h = handleGeminiError(0, '', model);
     steps.push({ label: 'Koneksi ke Google Gemini API', ok: false, detail: err?.message || 'kesalahan tak dikenal' });
-    return { ok: false, url: base, steps, message: `Gagal terhubung ke ${base}: ${err?.message || 'kesalahan tak dikenal'}` };
+    return {
+      ok: false,
+      url: base,
+      steps,
+      providerStatus: 'TEMPORARY_ERROR',
+      cooldownSeconds: h.cooldownSeconds,
+      message: `Gagal terhubung ke ${base}: ${err?.message || 'kesalahan tak dikenal'}`,
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -922,4 +994,7 @@ module.exports = {
   testPollinations,
   handleGeminiError,
   geminiError,
+  maskKey,
+  statusInfo,
+  parseCooldownSeconds,
 };

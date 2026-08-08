@@ -13,6 +13,7 @@ const features = require('./features');
 const themes = require('./themes');
 const providers = require('./providers');
 const cryptoKeys = require('./crypto');
+const providerStatus = require('./providerStatus');
 
 const app = express();
 app.use(cors());
@@ -156,6 +157,36 @@ app.post('/api/providers/:id/models', auth.optionalAuth, async (req, res) => {
 
   const baseUrl = String(body.baseUrl || '').trim() || p.defaultBaseUrl;
   const result = await providers.listProviderModels(providerId, { apiKey, baseUrl });
+  // Simpan status API key (ACTIVE / RATE_LIMIT / QUOTA_EXCEEDED / dll.) + cooldown
+  // agar diketahui penyebab kegagalan dan tidak dianggap "key habis" (point 3/4/5).
+  if (req.user) {
+    try {
+      const errDetail = result.providerStatus === 'ACTIVE'
+        ? {}
+        : { status: result.providerStatus, errorCode: result.providerStatus, errorMessage: result.message, cooldownSeconds: result.cooldownSeconds || 0 };
+      providerStatus.setProviderStatus(req.user.id, {
+        status: result.providerStatus || '',
+        success: result.providerStatus === 'ACTIVE',
+        errorCode: errDetail.errorCode || '',
+        errorMessage: errDetail.errorMessage || '',
+        cooldownSeconds: errDetail.cooldownSeconds || 0,
+      });
+      if (result.providerStatus === 'ACTIVE') {
+        db.prepare("UPDATE users SET last_models_sync = datetime('now') WHERE id = ?").run(req.user.id);
+      }
+      providerStatus.logRequest({
+        userId: req.user.id,
+        provider: providerId,
+        model: '',
+        status: result.providerStatus === 'ACTIVE' ? 200 : 0,
+        errorCode: errDetail.errorCode || '',
+        errorMessage: errDetail.errorMessage || '',
+        cooldownSeconds: errDetail.cooldownSeconds || 0,
+      });
+    } catch (e) {
+      console.error('persist status gagal:', e.message);
+    }
+  }
   // Persist hasil discovery per user agar tersedia setelah refresh halaman,
   // dan model lama yang sudah tidak tersedia ditandai (bukan dihapus).
   if (result.ok && req.user) {
@@ -225,6 +256,7 @@ app.patch('/api/me/provider', auth.requireAuth, (req, res) => {
 });
 
 // Tes koneksi ke provider yang dipilih (menggunakan endpoint & auth milik provider itu).
+// Hanya request RINGAN (list models) — TIDAK generate gambar (point 1/9).
 app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const body = req.body || {};
@@ -247,9 +279,66 @@ app.post('/api/me/provider/test', auth.requireAuth, async (req, res) => {
     return res.json({ ok: false, url: baseUrl, message: `API Key ${p.name} belum diisi.` });
   }
 
+  // Cooldown: selama 429 menunggu, jangan paksa request ulang (point 5).
+  const remaining = providerStatus.cooldownRemainingSeconds(row);
+  if (remaining > 0 && providerId === 'gemini') {
+    providerStatus.clearExpiredCooldown(row);
+    return res.json({
+      ok: false,
+      url: baseUrl,
+      message: `Gemini sedang terkena rate limit. Coba lagi dalam ${remaining} detik.`,
+      providerStatus: row.provider_status || 'RATE_LIMIT',
+      cooldownSeconds: remaining,
+    });
+  }
+
   // Gunakan adapter test milik provider -> endpoint & auth yang benar.
   const result = await p.test({ apiKey, baseUrl, model });
+  // Simpan status API key + timestamps + log (tanpa menyimpan key).
+  try {
+    const isActive = result.providerStatus === 'ACTIVE';
+    providerStatus.setProviderStatus(req.user.id, {
+      status: result.providerStatus || (result.ok ? 'ACTIVE' : 'TEMPORARY_ERROR'),
+      success: result.ok,
+      errorCode: result.providerStatus === 'ACTIVE' ? '' : (result.providerStatus || ''),
+      errorMessage: result.ok ? '' : result.message,
+      cooldownSeconds: result.cooldownSeconds || 0,
+    });
+    providerStatus.logRequest({
+      userId: req.user.id,
+      provider: providerId,
+      model,
+      status: result.status || (result.ok ? 200 : 0),
+      errorCode: result.providerStatus === 'ACTIVE' ? '' : (result.providerStatus || ''),
+      errorMessage: result.ok ? '' : result.message,
+      cooldownSeconds: result.cooldownSeconds || 0,
+    });
+    if (isActive) {
+      db.prepare("UPDATE users SET last_models_sync = datetime('now') WHERE id = ?").run(req.user.id);
+    }
+  } catch (e) {
+    console.error('persist status test gagal:', e.message);
+  }
   return res.json(result);
+});
+
+// Status provider terakhir untuk user ini (dashboard Settings / admin).
+// Tanpa key — hanya status, timestamps, cooldown, dan masked key.
+app.get('/api/me/provider/status', auth.requireAuth, (req, res) => {
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!row) return res.status(401).json({ error: 'Akun tidak ditemukan' });
+  const remaining = providerStatus.cooldownRemainingSeconds(row);
+  res.json({
+    provider: row.provider || '',
+    status: row.provider_status || 'UNKNOWN',
+    lastTestedAt: row.last_tested_at || '',
+    lastSuccessAt: row.last_success_at || '',
+    lastErrorCode: row.last_error_code || '',
+    lastErrorMessage: row.last_error_message || '',
+    cooldownSeconds: remaining,
+    keyMask: providers.maskKey(cryptoKeys.decryptKey(row.provider_key)),
+    lastModelsSync: row.last_models_sync || '',
+  });
 });
 
 // ================= Kredit / wallet =================
